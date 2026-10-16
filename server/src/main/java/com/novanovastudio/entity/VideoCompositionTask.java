@@ -18,6 +18,9 @@ public class VideoCompositionTask {
     /** 用户ID */
     private Long userId;
 
+    /** 任务类型 */
+    private String taskType;
+
     /** 任务状态 */
     private String status;
 

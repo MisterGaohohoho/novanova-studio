@@ -278,6 +278,12 @@ novanova:
       # FFmpeg和FFprobe可执行文件路径，本地开发可通过环境变量覆盖
       ffmpeg-executable: ${AI_VIDEO_COMPOSITION_FFMPEG_EXECUTABLE:ffmpeg}
       ffprobe-executable: ${AI_VIDEO_COMPOSITION_FFPROBE_EXECUTABLE:ffprobe}
+      # 单个用户同时处于准备态的导演台导出任务数量
+      director-desk-maximum-preparing-tasks: ${AI_VIDEO_COMPOSITION_DIRECTOR_DESK_MAXIMUM_PREPARING_TASKS:3}
+      # 单个导演台导出任务允许的全部PNG帧总大小，默认512MB
+      director-desk-maximum-frame-bytes: ${AI_VIDEO_COMPOSITION_DIRECTOR_DESK_MAXIMUM_FRAME_BYTES:536870912}
+      # 当前实例同时接收的导演台帧上传数量
+      director-desk-maximum-concurrent-uploads: ${AI_VIDEO_COMPOSITION_DIRECTOR_DESK_MAXIMUM_CONCURRENT_UPLOADS:4}
     # ----------------------------------------------------------
     # AI 任务消费配置
     # 基于 Redis Stream + Consumer Group 实现，不是队列也不是栈。

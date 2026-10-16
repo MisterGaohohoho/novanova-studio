@@ -28,6 +28,7 @@ import java.net.URLConnection;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
 import java.security.SecureRandom;
 import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
@@ -1211,6 +1212,7 @@ public class PersistenceService {
         return currentUserProvider.currentUserId()
                 .flatMap(userId -> readFilePart(file)
                         .flatMap(fileBytes -> {
+                            validateUploadMetadata(fileBytes, input.metadata());
                             String kind = normalizeMediaKind(input.kind());
                             if ("avatar".equals(kind) && fileBytes.length > AVATAR_MAX_FILE_SIZE_BYTES) {
                                 return Mono.error(new BusinessException(ErrorCode.PARAM_INVALID, "头像图片不能超过 2MB"));
@@ -1240,6 +1242,41 @@ public class PersistenceService {
                                 });
                             });
                         }));
+    }
+
+    /**
+     * 校验上传方要求的文件大小和SHA-256摘要。
+     *
+     * @param fileBytes byte[] 已读取的文件内容
+     * @param metadata JSONObject 上传扩展元数据
+     */
+    private void validateUploadMetadata(byte[] fileBytes, JSONObject metadata) {
+        if (metadata == null) {
+            return;
+        }
+        if (metadata.containsKey("maximumBytes")) {
+            long maximumBytes = metadata.getLongValue("maximumBytes");
+            if (maximumBytes < 1 || fileBytes.length > maximumBytes) {
+                throw new BusinessException(ErrorCode.PARAM_INVALID, "上传文件超过允许大小");
+            }
+        }
+        String expectedSha256 = metadata.getString("sha256");
+        if (!StringUtils.hasText(expectedSha256)) {
+            return;
+        }
+        if (!expectedSha256.matches("[0-9a-fA-F]{64}")) {
+            throw new BusinessException(ErrorCode.PARAM_INVALID, "上传文件摘要格式无效");
+        }
+        try {
+            String actualSha256 = HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(fileBytes));
+            if (!expectedSha256.equalsIgnoreCase(actualSha256)) {
+                throw new BusinessException(ErrorCode.PARAM_INVALID, "上传文件摘要校验失败");
+            }
+        } catch (BusinessException exception) {
+            throw exception;
+        } catch (Exception exception) {
+            throw new BusinessException(ErrorCode.SYSTEM_ERROR, "计算上传文件摘要失败");
+        }
     }
 
     /**
@@ -1475,6 +1512,34 @@ public class PersistenceService {
                     String mimeType = firstNonEmpty(record.getMimeType(), "video/mp4");
                     long maximumBytes = Math.max(1L, properties.getAi().getVideoComposition().getMaximumInputBytes());
                     log.info("下载视频合成源媒体: userId={}, storageKey={}", userId, normalizedStorageKey);
+                    return aiHttpClient.downloadRemoteMediaToFile(sourceUrl, mimeType, target, maximumBytes)
+                            .map(downloaded -> new DownloadedMediaFile(normalizedStorageKey, target, downloaded.mimeType(), downloaded.bytes()));
+                });
+    }
+
+    /**
+     * 将当前用户的临时媒体流式下载到本地文件。
+     *
+     * @param userId Long 媒体归属用户ID
+     * @param storageKey String 媒体存储键
+     * @param target Path 本地目标文件
+     * @return Mono<DownloadedMediaFile> 已下载媒体信息
+     */
+    public Mono<DownloadedMediaFile> downloadMediaToFileForUser(Long userId, String storageKey, Path target) {
+        String normalizedStorageKey = firstNonEmpty(storageKey);
+        if (!StringUtils.hasText(normalizedStorageKey)) {
+            return Mono.error(new BusinessException(ErrorCode.PARAM_MISSING, "媒体存储键不能为空"));
+        }
+        return repository.getMedia(userId, normalizedStorageKey)
+                .switchIfEmpty(Mono.error(new BusinessException(ErrorCode.RESOURCE_NOT_FOUND, "媒体不存在")))
+                .flatMap(record -> {
+                    String sourceUrl = firstNonEmpty(record.getObjectStorageUrl(), record.getSourceUrl());
+                    if (!StringUtils.hasText(sourceUrl)) {
+                        return Mono.error(new BusinessException(ErrorCode.BUSINESS_ERROR, "媒体没有可下载的地址"));
+                    }
+                    String mimeType = firstNonEmpty(record.getMimeType(), "application/octet-stream");
+                    long maximumBytes = Math.max(1L, properties.getAi().getVideoComposition().getMaximumInputBytes());
+                    log.info("下载导演台临时媒体: userId={}, storageKey={}", userId, normalizedStorageKey);
                     return aiHttpClient.downloadRemoteMediaToFile(sourceUrl, mimeType, target, maximumBytes)
                             .map(downloaded -> new DownloadedMediaFile(normalizedStorageKey, target, downloaded.mimeType(), downloaded.bytes()));
                 });

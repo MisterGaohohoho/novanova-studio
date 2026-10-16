@@ -1283,7 +1283,7 @@ export async function serverPost<T = string>(path: string, body: unknown, option
     );
 }
 
-async function serverFetch<T>(path: string, init: RequestInit, options: { auth?: boolean } = {}) {
+export async function serverFetch<T>(path: string, init: RequestInit, options: { auth?: boolean } = {}) {
     const response = await requestServer(path, init, options);
     const payload = (await response.json().catch(() => null)) as ApiResponse<T> | null;
     if (!response.ok || !payload) {
