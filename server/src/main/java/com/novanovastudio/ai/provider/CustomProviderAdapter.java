@@ -29,13 +29,16 @@ import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
+import java.util.stream.Stream;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -67,7 +70,7 @@ public class CustomProviderAdapter implements AiProviderAdapter {
     /** LLM提取媒体地址超时秒数 */
     private static final long LLM_EXTRACTION_TIMEOUT_SECONDS = 60;
 
-    /** AI构造请求体返回空内容或非法JSON时的最大重试次数 */
+    /** AI构造请求体返回空内容、非法JSON或遗漏参考素材时的最大重试次数 */
     private static final int BODY_BUILD_MAX_RETRIES = 2;
 
     /** 请求体模板占位符匹配，如{{prompt}} */
@@ -235,7 +238,8 @@ public class CustomProviderAdapter implements AiProviderAdapter {
             return buildBodyWithAgent(context, group, group.aiRequestPrompt(), "请求体", referenceUrls, videoReferenceUrls, audioReferenceUrls, null);
         }
         return Mono.fromCallable(() -> parseRenderedBody(
-                renderTemplate(group.requestTemplate(), buildPlaceholders(context, group, referenceUrls, videoReferenceUrls, audioReferenceUrls, null)), "请求示例"));
+                renderTemplate(group.requestTemplate(), buildPlaceholders(context, group, referenceUrls, videoReferenceUrls, audioReferenceUrls, null)), "请求示例"))
+                .map(body -> requireReferenceUrls(body, referenceUrls, videoReferenceUrls, audioReferenceUrls));
     }
 
     /**
@@ -329,15 +333,24 @@ public class CustomProviderAdapter implements AiProviderAdapter {
     private Mono<JSONObject> buildBodyWithAgent(AiTaskExecutionContext context, PersistenceDtos.CustomModelGroupConfig group,
                                                 String userPrompt, String purpose, List<String> referenceUrls,
                                                 List<String> videoReferenceUrls, List<String> audioReferenceUrls, String taskId) {
+        String requestTemplate = taskId == null ? group.requestTemplate() : group.queryRequestTemplate();
         String prompt = "你是AI请求体构造助手。请严格按用户要求构造JSON请求体对象。\n\n"
                 + "用户构造要求：\n" + userPrompt + "\n\n"
+                + (StringUtils.hasText(requestTemplate) ? "请求示例（用于参考接口字段与结构）：\n" + requestTemplate + "\n\n" : "")
                 + "本次请求信息：\n" + describeRequestParameters(context, group, referenceUrls, videoReferenceUrls, audioReferenceUrls, taskId) + "\n\n"
+                + "本次提供的参考图片、参考视频和参考音频必须全部按原始URL填入接口对应的素材字段，不能遗漏或只写进prompt。"
+                + "只使用用户配置明确支持的字段，不得编造字段，也不得将参考视频当作参考音频。\n"
                 + "只返回请求体JSON对象，不要返回解释、Markdown代码块或任何其他内容。";
-        log.info("AI构造请求体请求: taskId={}, purpose={}, prompt={}", context.task().getId(), purpose, abbreviate(prompt));
         AtomicReference<String> agentOutput = new AtomicReference<>();
-        return Mono.defer(() -> agentScopeModelFactory.defaultTextModel()
+        AtomicReference<String> constructionError = new AtomicReference<>();
+        return Mono.defer(() -> {
+                    String attemptPrompt = prompt + (constructionError.get() == null ? ""
+                            : "\n\n上次构造错误，请修正：\n" + constructionError.get());
+                    agentOutput.set(null);
+                    log.info("AI构造请求体请求: taskId={}, purpose={}, prompt={}", context.task().getId(), purpose, abbreviate(attemptPrompt));
+                    return agentScopeModelFactory.defaultTextModel()
                         .flatMap(model -> {
-                            Msg userMsg = Msg.builder().role(MsgRole.USER).textContent(prompt).build();
+                            Msg userMsg = Msg.builder().role(MsgRole.USER).textContent(attemptPrompt).build();
                             // 聚合整条流而非取首个块：deepseek思考模式首个SSE增量块content为空
                             return model.stream(List.of(userMsg), List.of(), GenerateOptions.builder().build())
                                     .map(CustomProviderAdapter::chatResponseText)
@@ -350,13 +363,78 @@ public class CustomProviderAdapter implements AiProviderAdapter {
                             log.info("AI构造请求体响应: taskId={}, purpose={}, output={}", context.task().getId(), purpose, abbreviate(text));
                         })
                         .map(CustomProviderAdapter::extractFirstJsonObject)
-                        // 偶发空返回或非法JSON：清空上次输出记录并有限重试后再判定失败
-                        .retryWhen(Retry.fixedDelay(BODY_BUILD_MAX_RETRIES, Duration.ofMillis(200))
-                                .filter(CustomProviderAdapter::isRetryableBodyError)
-                                .doAfterRetry(retrySignal -> agentOutput.set(null))))
-                .onErrorResume(exception -> Mono.error(new BusinessException(ErrorCode.BUSINESS_ERROR,
-                        "AI构造" + purpose + "失败: " + exception.getMessage()
-                                + (StringUtils.hasText(agentOutput.get()) ? "，AI返回内容: " + abbreviate(agentOutput.get()) : ""))));
+                        .map(body -> requireReferenceUrls(body, referenceUrls, videoReferenceUrls, audioReferenceUrls));
+                })
+                // 将校验失败原因反馈给AI，重试后仍不完整时禁止提交上游任务。
+                .retryWhen(Retry.fixedDelay(BODY_BUILD_MAX_RETRIES, Duration.ofMillis(200))
+                        .filter(CustomProviderAdapter::isRetryableBodyError)
+                        .doBeforeRetry(retrySignal -> constructionError.set(retrySignal.failure().getMessage()))
+                        .onRetryExhaustedThrow((retrySpec, retrySignal) -> retrySignal.failure()))
+                .onErrorResume(exception -> {
+                    log.error("AI构造{}失败: taskId={}, 原因={}", purpose, context.task().getId(), exception.getMessage());
+                    return Mono.error(new BusinessException(ErrorCode.BUSINESS_ERROR,
+                            "AI构造" + purpose + "失败: " + exception.getMessage()
+                                    + (StringUtils.hasText(agentOutput.get()) ? "，AI返回内容: " + abbreviate(agentOutput.get()) : "")));
+                });
+    }
+
+    /**
+     * 校验提交请求包含全部参考素材，避免AI或模板遗漏素材后仍提交生成任务。
+     *
+     * @param body JSONObject 待提交请求体
+     * @param referenceUrls List<String> 参考图片URL列表
+     * @param videoReferenceUrls List<String> 参考视频URL列表
+     * @param audioReferenceUrls List<String> 参考音频URL列表
+     * @return JSONObject 校验通过的请求体
+     * @throws MissingReferenceException 请求体遗漏任一参考素材时抛出
+     */
+    private static JSONObject requireReferenceUrls(JSONObject body, List<String> referenceUrls,
+                                                   List<String> videoReferenceUrls, List<String> audioReferenceUrls) {
+        if (referenceUrls.isEmpty() && videoReferenceUrls.isEmpty() && audioReferenceUrls.isEmpty()) {
+            return body;
+        }
+        Set<String> submittedUrls = new HashSet<>();
+        collectMediaUrls(body, submittedUrls);
+        List<String> missingUrls = Stream.of(referenceUrls, videoReferenceUrls, audioReferenceUrls)
+                .flatMap(List::stream).filter(url -> !submittedUrls.contains(url)).distinct().toList();
+        if (!missingUrls.isEmpty()) {
+            throw new MissingReferenceException("请求体遗漏参考素材URL: " + String.join("、", missingUrls)
+                    + "。请检查自定义模型的AI构造提示词或请求模板是否配置了对应素材字段");
+        }
+        return body;
+    }
+
+    /**
+     * 收集嵌套对象和数组中的完整媒体URL，提示词中的URL不作为素材字段计算。
+     *
+     * @param value Object 当前请求体节点
+     * @param mediaUrls Set<String> 实际提交的媒体URL集合
+     */
+    private static void collectMediaUrls(Object value, Set<String> mediaUrls) {
+        if (value instanceof Map<?, ?> object) {
+            object.forEach((key, child) -> {
+                if (!"prompt".equals(key)) {
+                    collectMediaUrls(child, mediaUrls);
+                }
+            });
+        } else if (value instanceof Iterable<?> array) {
+            array.forEach(child -> collectMediaUrls(child, mediaUrls));
+        } else if (value instanceof String url && isHttpUrl(url)) {
+            mediaUrls.add(url);
+        }
+    }
+
+    /** 参考素材遗漏异常，用于区分可反馈给AI修正的请求体构造错误。 */
+    private static class MissingReferenceException extends BusinessException {
+
+        /**
+         * 创建参考素材遗漏异常。
+         *
+         * @param message String 遗漏素材与配置修正说明
+         */
+        private MissingReferenceException(String message) {
+            super(ErrorCode.PARAM_INVALID, message);
+        }
     }
 
     /**
@@ -904,15 +982,15 @@ public class CustomProviderAdapter implements AiProviderAdapter {
     }
 
     /**
-     * 判断是否为可重试的请求体构造失败（LLM偶发返回空内容或非法JSON）。
+     * 判断是否为可重试的请求体构造失败，包括空内容、非法JSON和遗漏参考素材。
      *
      * @param exception Throwable 异常
      * @return boolean 是否可重试
      */
     private static boolean isRetryableBodyError(Throwable exception) {
-        return exception instanceof BusinessException
+        return exception instanceof MissingReferenceException || (exception instanceof BusinessException
                 && StringUtils.hasText(exception.getMessage())
-                && exception.getMessage().contains("不是合法JSON对象");
+                && exception.getMessage().contains("不是合法JSON对象"));
     }
 
     /**

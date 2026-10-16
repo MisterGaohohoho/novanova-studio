@@ -1,6 +1,7 @@
 package com.novanovastudio.repository;
 
 import com.novanovastudio.entity.VideoCompositionTask;
+import java.time.OffsetDateTime;
 import lombok.RequiredArgsConstructor;
 import org.springframework.r2dbc.core.DatabaseClient;
 import org.springframework.stereotype.Repository;
@@ -28,11 +29,12 @@ public class VideoCompositionTaskRepository {
      */
     public Mono<Void> createTask(VideoCompositionTask task) {
         return databaseClient.sql("""
-                INSERT INTO video_composition_tasks(id, user_id, status, progress, source_storage_keys, result_data, error_message)
-                VALUES (:id, :userId, :status, :progress, CAST(:sourceStorageKeys AS jsonb), CAST(:resultData AS jsonb), :errorMessage)
+                INSERT INTO video_composition_tasks(id, user_id, task_type, status, progress, source_storage_keys, result_data, error_message)
+                VALUES (:id, :userId, :taskType, :status, :progress, CAST(:sourceStorageKeys AS jsonb), CAST(:resultData AS jsonb), :errorMessage)
                 """)
                 .bind("id", task.getId())
                 .bind("userId", task.getUserId())
+                .bind("taskType", task.getTaskType())
                 .bind("status", task.getStatus())
                 .bind("progress", task.getProgress())
                 .bind("sourceStorageKeys", task.getSourceStorageKeys())
@@ -145,10 +147,68 @@ public class VideoCompositionTaskRepository {
         return databaseClient.sql("""
                 UPDATE video_composition_tasks
                 SET status = 'canceled', progress = 100, error_message = '任务已取消', completed_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
-                WHERE user_id = :userId AND id = :taskId AND status IN ('pending', 'running')
+                WHERE user_id = :userId AND id = :taskId AND status IN ('preparing', 'pending', 'running')
                 """)
                 .bind("userId", userId)
                 .bind("taskId", taskId)
+                .fetch()
+                .rowsUpdated()
+                .map(count -> count != null && count > 0);
+    }
+
+    /**
+     * 原子追加导演台帧清单，避免并发上传时使用旧快照覆盖其他帧。
+     *
+     * @param userId Long 用户ID
+     * @param taskId String 任务ID
+     * @param frameNumber int 帧序号
+     * @param frameJson String 帧元数据JSON
+     * @param frameBytes long 当前帧字节数
+     * @param maximumTotalBytes long 任务允许的帧总字节数
+     * @return Mono<String> 追加后的任务快照；帧已存在、任务状态不符或超出总容量时返回空
+     */
+    public Mono<String> appendPreparingDirectorDeskFrame(Long userId, String taskId, int frameNumber,
+                                                          String frameJson, long frameBytes, long maximumTotalBytes) {
+        return databaseClient.sql("""
+                UPDATE video_composition_tasks
+                SET source_storage_keys = jsonb_set(
+                    source_storage_keys,
+                    '{frames}',
+                    COALESCE(source_storage_keys->'frames', '[]'::jsonb) || jsonb_build_array(CAST(:frameJson AS jsonb)),
+                    true
+                ), updated_at = CURRENT_TIMESTAMP
+                WHERE user_id = :userId AND id = :taskId AND task_type = 'directorDeskExport' AND status = 'preparing'
+                  AND NOT EXISTS (
+                      SELECT 1
+                      FROM jsonb_array_elements(COALESCE(source_storage_keys->'frames', '[]'::jsonb)) AS frame
+                      WHERE frame->>'frameNumber' = CAST(:frameNumber AS text)
+                  )
+                  AND COALESCE((
+                      SELECT SUM(NULLIF(frame->>'bytes', '')::bigint)
+                      FROM jsonb_array_elements(COALESCE(source_storage_keys->'frames', '[]'::jsonb)) AS frame
+                  ), 0) + CAST(:frameBytes AS bigint) <= :maximumTotalBytes
+                RETURNING source_storage_keys::text AS source_storage_keys
+                """)
+                .bind("userId", userId)
+                .bind("taskId", taskId)
+                .bind("frameNumber", frameNumber)
+                .bind("frameJson", frameJson)
+                .bind("frameBytes", Math.max(0L, frameBytes))
+                .bind("maximumTotalBytes", Math.max(1L, maximumTotalBytes))
+                .map((row, metadata) -> row.get("source_storage_keys", String.class))
+                .one();
+    }
+
+    /** 原子封存导演台帧清单并转入现有等待队列。 */
+    public Mono<Boolean> sealDirectorDeskTask(Long userId, String taskId, String sourceSnapshot) {
+        return databaseClient.sql("""
+                UPDATE video_composition_tasks
+                SET status = 'pending', progress = 0, source_storage_keys = CAST(:sourceSnapshot AS jsonb), updated_at = CURRENT_TIMESTAMP
+                WHERE user_id = :userId AND id = :taskId AND task_type = 'directorDeskExport' AND status = 'preparing'
+                """)
+                .bind("userId", userId)
+                .bind("taskId", taskId)
+                .bind("sourceSnapshot", sourceSnapshot)
                 .fetch()
                 .rowsUpdated()
                 .map(count -> count != null && count > 0);
@@ -174,6 +234,33 @@ public class VideoCompositionTaskRepository {
         return queryTask("WHERE status = 'running' ORDER BY created_at ASC, id ASC")
                 .map((row, metadata) -> RowMappers.videoCompositionTask(row))
                 .all();
+    }
+
+    /**
+     * 查询超时未封存的导演台准备任务。
+     *
+     * @param cutoffTime 超时判断时间点
+     * @return Flux<VideoCompositionTask> 已超时准备任务
+     */
+    public Flux<VideoCompositionTask> listExpiredDirectorDeskPreparingTasks(OffsetDateTime cutoffTime) {
+        return queryTask("WHERE task_type = 'directorDeskExport' AND status = 'preparing' AND updated_at < :cutoffTime ORDER BY updated_at ASC, id ASC")
+                .bind("cutoffTime", cutoffTime)
+                .map((row, metadata) -> RowMappers.videoCompositionTask(row))
+                .all();
+    }
+
+    /** 统计用户当前未封存的导演台准备任务数量。 */
+    public Mono<Integer> countDirectorDeskPreparingTasks(Long userId) {
+        return databaseClient.sql("""
+                SELECT COUNT(*) AS task_count
+                FROM video_composition_tasks
+                WHERE user_id = :userId AND task_type = 'directorDeskExport' AND status = 'preparing'
+                """)
+                .bind("userId", userId)
+                .map((row, metadata) -> row.get("task_count", Long.class))
+                .one()
+                .map(value -> Math.toIntExact(value))
+                .defaultIfEmpty(0);
     }
 
     /**
@@ -203,7 +290,7 @@ public class VideoCompositionTaskRepository {
      */
     private DatabaseClient.GenericExecuteSpec queryTask(String condition) {
         return databaseClient.sql("""
-                SELECT id, user_id, status, progress, source_storage_keys::text AS source_storage_keys, result_data::text AS result_data,
+                SELECT id, user_id, task_type, status, progress, source_storage_keys::text AS source_storage_keys, result_data::text AS result_data,
                        error_message, started_at, completed_at, created_at, updated_at
                 FROM video_composition_tasks
                 """ + condition);

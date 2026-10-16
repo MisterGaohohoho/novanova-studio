@@ -895,6 +895,15 @@ public class NovanovaProperties {
             /** FFprobe可执行文件路径 */
             private String ffprobeExecutable = "ffprobe";
 
+            /** 单个用户同时处于准备态的导演台任务上限 */
+            private int directorDeskMaximumPreparingTasks = 3;
+
+            /** 单个导演台任务允许的帧总字节数 */
+            private long directorDeskMaximumFrameBytes = 536_870_912L;
+
+            /** 当前实例同时接收的导演台帧上传数量上限 */
+            private int directorDeskMaximumConcurrentUploads = 4;
+
             /**
              * 获取全站同时执行的合成任务数量。
              *
@@ -1037,6 +1046,60 @@ public class NovanovaProperties {
              */
             public void setFfprobeExecutable(String ffprobeExecutable) {
                 this.ffprobeExecutable = ffprobeExecutable;
+            }
+
+            /**
+             * 获取单个用户同时处于准备态的导演台任务上限。
+             *
+             * @return int 任务数量上限
+             */
+            public int getDirectorDeskMaximumPreparingTasks() {
+                return directorDeskMaximumPreparingTasks;
+            }
+
+            /**
+             * 设置单个用户同时处于准备态的导演台任务上限。
+             *
+             * @param directorDeskMaximumPreparingTasks int 任务数量上限
+             */
+            public void setDirectorDeskMaximumPreparingTasks(int directorDeskMaximumPreparingTasks) {
+                this.directorDeskMaximumPreparingTasks = directorDeskMaximumPreparingTasks;
+            }
+
+            /**
+             * 获取单个导演台任务允许的帧总字节数。
+             *
+             * @return long 帧总字节数上限
+             */
+            public long getDirectorDeskMaximumFrameBytes() {
+                return directorDeskMaximumFrameBytes;
+            }
+
+            /**
+             * 设置单个导演台任务允许的帧总字节数。
+             *
+             * @param directorDeskMaximumFrameBytes long 帧总字节数上限
+             */
+            public void setDirectorDeskMaximumFrameBytes(long directorDeskMaximumFrameBytes) {
+                this.directorDeskMaximumFrameBytes = directorDeskMaximumFrameBytes;
+            }
+
+            /**
+             * 获取当前实例同时接收的导演台帧上传数量上限。
+             *
+             * @return int 并行上传数量上限
+             */
+            public int getDirectorDeskMaximumConcurrentUploads() {
+                return directorDeskMaximumConcurrentUploads;
+            }
+
+            /**
+             * 设置当前实例同时接收的导演台帧上传数量上限。
+             *
+             * @param directorDeskMaximumConcurrentUploads int 并行上传数量上限
+             */
+            public void setDirectorDeskMaximumConcurrentUploads(int directorDeskMaximumConcurrentUploads) {
+                this.directorDeskMaximumConcurrentUploads = directorDeskMaximumConcurrentUploads;
             }
         }
 

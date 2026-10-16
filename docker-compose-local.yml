@@ -1,3 +1,5 @@
+name: novanova-studio
+
 services:
   postgres:
     image: postgres:17
