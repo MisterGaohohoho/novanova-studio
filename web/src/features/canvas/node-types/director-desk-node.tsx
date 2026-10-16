@@ -32,7 +32,7 @@ export const DirectorDeskNode = memo(function DirectorDeskNode({ data: rawData, 
             <NodeHoverSurface
                 nodeId={data.id}
                 className="relative flex select-none flex-col overflow-visible rounded-lg border"
-                style={{ width: "100%", height: "100%", background: theme.node.panel, borderColor: selected ? theme.node.activeStroke : theme.node.stroke, boxShadow: selected ? `0 0 0 1px ${theme.node.activeStroke}55` : undefined }}
+                style={{ width: "100%", height: "100%", background: theme.node.panel, color: theme.node.text, borderColor: selected ? theme.node.activeStroke : theme.node.stroke, boxShadow: selected ? `0 0 0 1px ${theme.node.activeStroke}55` : undefined }}
             >
                 <CanvasNodeTitle nodeId={data.id} title={data.title} defaultTitle="3D 导演台" onTitleChange={actions.onTitleChange} />
                 <div className="flex items-center gap-2 border-b px-3 py-2.5" style={{ borderColor: theme.node.stroke }}>
@@ -43,18 +43,18 @@ export const DirectorDeskNode = memo(function DirectorDeskNode({ data: rawData, 
                     </span>
                 </div>
                 <div className="relative min-h-0 flex-1 overflow-hidden px-3 py-3">
-                    <div className="relative h-full min-h-36 overflow-hidden rounded-md border" style={{ borderColor: theme.node.stroke, background: "linear-gradient(160deg, #1a2330 0%, #0b1018 68%)" }}>
+                    <div className="relative h-full min-h-36 overflow-hidden rounded-md border" style={{ borderColor: theme.node.stroke, background: theme.directorDesk.background }}>
                         <div
-                            className="absolute inset-0 opacity-25"
-                            style={{ backgroundImage: "linear-gradient(rgba(255,255,255,.08) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,.08) 1px, transparent 1px)", backgroundSize: "24px 24px" }}
+                            className="absolute inset-0 opacity-35"
+                            style={{ backgroundImage: `linear-gradient(${theme.directorDesk.grid} 1px, transparent 1px), linear-gradient(90deg, ${theme.directorDesk.grid} 1px, transparent 1px)`, backgroundSize: "24px 24px" }}
                         />
-                        <div className="absolute inset-x-[18%] bottom-[14%] h-[28%] rounded-[50%] border border-white/10 bg-white/5" style={{ transform: "perspective(500px) rotateX(62deg)" }} />
-                        <div className="absolute left-1/2 top-[42%] size-10 -translate-x-1/2 rounded-[45%_45%_35%_35%] bg-gradient-to-br from-fuchsia-300 to-violet-700 shadow-[0_12px_24px_rgba(0,0,0,.3)]" />
-                        <div className="absolute left-1/2 top-2 flex -translate-x-1/2 items-center gap-1 rounded bg-black/35 px-2 py-1 text-[10px] text-white/70">
+                        <div className="absolute inset-x-[18%] bottom-[14%] h-[28%] rounded-[50%] border" style={{ transform: "perspective(500px) rotateX(62deg)", borderColor: theme.directorDesk.grid, background: theme.toolbar.activeBg }} />
+                        <div className="absolute left-1/2 top-[42%] size-10 -translate-x-1/2 rounded-[45%_45%_35%_35%]" style={{ background: theme.node.activeStroke }} />
+                        <div className="absolute left-1/2 top-2 flex -translate-x-1/2 items-center gap-1 rounded px-2 py-1 text-[10px]" style={{ background: theme.node.panel, color: theme.node.muted }}>
                             <Camera className="size-3" />
                             {camera?.name || "未选择机位"}
                         </div>
-                        <div className="absolute bottom-2 left-2 flex items-center gap-1 text-[10px] text-white/60">
+                        <div className="absolute bottom-2 left-2 flex items-center gap-1 text-[10px]" style={{ color: theme.node.muted }}>
                             <KeyRound className="size-3" />
                             {keyframeCount} 个关键帧
                         </div>

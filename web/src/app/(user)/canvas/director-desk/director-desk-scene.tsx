@@ -114,8 +114,8 @@ export const DirectorDeskScene = forwardRef<DirectorDeskSceneHandle, SceneProps>
     const [status, setStatus] = useState<"loading" | "ready" | "error">("loading");
     const [errorMessage, setErrorMessage] = useState("");
     const [retry, setRetry] = useState(0);
-    const colorsRef = useRef({ background: theme.canvas.background, grid: theme.node.stroke, accent: theme.node.activeStroke, text: theme.node.text });
-    colorsRef.current = { background: theme.canvas.background, grid: theme.node.stroke, accent: theme.node.activeStroke, text: theme.node.text };
+    const colorsRef = useRef({ background: theme.directorDesk.background, grid: theme.directorDesk.grid, accent: theme.node.activeStroke, text: theme.node.text });
+    colorsRef.current = { background: theme.directorDesk.background, grid: theme.directorDesk.grid, accent: theme.node.activeStroke, text: theme.node.text };
 
     useImperativeHandle(ref, () => ({
         finishDrawing: (closed = false) => runtimeRef.current?.pathEditor.finish(closed) || false,
@@ -202,7 +202,11 @@ export const DirectorDeskScene = forwardRef<DirectorDeskSceneHandle, SceneProps>
             const helpers = new Three.Group();
             const jointMarkers = new Three.Group();
             helpers.add(jointMarkers);
-            const grid = new Three.GridHelper(40, 40, colorsRef.current.grid, colorsRef.current.grid);
+            const grid = new Three.GridHelper(40, 40);
+            // 只使用材质主题色，避免顶点色叠乘后将暗色网格再次压暗。
+            const gridMaterial = grid.material as Three.LineBasicMaterial;
+            gridMaterial.vertexColors = false;
+            gridMaterial.color.set(colorsRef.current.grid);
             grid.position.y = 0.001;
             // 地面网格属于场景内容，在机位预览及图片、视频导出中始终保留。
             scene.add(grid, helpers);

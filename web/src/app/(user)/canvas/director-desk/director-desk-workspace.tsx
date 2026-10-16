@@ -557,7 +557,7 @@ export function DirectorDeskWorkspace({ open, projectId, node, onClose, onChange
     </div> : <p className="text-xs text-[var(--studio-muted)]">选择场景对象或机位进行编辑。</p>;
     return (
         <Modal title={null} open={open} onCancel={handleClose} footer={null} closable={false} width="calc(100vw - 24px)" style={{ top: 12 }} styles={{ body: { height: "calc(100dvh - 72px)", padding: 0, overflow: "hidden" } }} destroyOnHidden>
-            <div ref={workspaceRef} className="flex h-full min-h-0 flex-col" style={{ background: theme.canvas.background, color: theme.node.text }}>
+            <div ref={workspaceRef} className="flex h-full min-h-0 flex-col" style={{ background: theme.node.panel, color: theme.node.text }}>
                 <header className="flex shrink-0 flex-wrap items-center gap-3 border-b px-4 py-2" style={{ borderColor: theme.node.stroke }}>
                     <Box className="size-4" aria-hidden="true" /><h2 className="text-sm font-semibold">{node.title || "3D 导演台"}</h2>
                     <Segmented size="small" disabled={videoExporting || Boolean(drawingTool)} value={viewMode} options={[{ label: "导演视角", value: "director" }, { label: "机位视角", value: "camera" }]} onChange={(value) => setViewMode(value as "director" | "camera")} />
@@ -571,8 +571,8 @@ export function DirectorDeskWorkspace({ open, projectId, node, onClose, onChange
                 <div className="grid min-h-0 flex-1 grid-cols-[176px_minmax(0,1fr)_292px] max-[1100px]:grid-cols-[136px_minmax(0,1fr)_260px]">
                     <aside className="min-h-0 overflow-y-auto border-r p-3" style={{ borderColor: theme.node.stroke }}>
                         <h3 className="mb-2 text-xs font-medium">场景</h3>
-                        <div className="space-y-1">{project.cameras.map((camera) => <button key={camera.id} type="button" disabled={videoExporting || playing} className="flex w-full items-center gap-2 rounded px-2 py-2 text-left text-xs" style={{ background: editingCameraId === camera.id ? theme.node.stroke : undefined }} onClick={() => selectCamera(camera.id)}><Camera className="size-3.5 shrink-0" /><span className="truncate">{camera.name}</span></button>)}
-                            {project.objects.map((object) => <div key={object.id} className="flex items-center rounded" style={{ background: selectedObjectId === object.id ? theme.node.stroke : undefined }}>
+                        <div className="space-y-1">{project.cameras.map((camera) => <button key={camera.id} type="button" disabled={videoExporting || playing} className="flex w-full items-center gap-2 rounded px-2 py-2 text-left text-xs" style={{ background: editingCameraId === camera.id ? theme.toolbar.activeBg : undefined, color: editingCameraId === camera.id ? theme.toolbar.activeText : undefined }} onClick={() => selectCamera(camera.id)}><Camera className="size-3.5 shrink-0" /><span className="truncate">{camera.name}</span></button>)}
+                            {project.objects.map((object) => <div key={object.id} className="flex items-center rounded" style={{ background: selectedObjectId === object.id ? theme.toolbar.activeBg : undefined, color: selectedObjectId === object.id ? theme.toolbar.activeText : undefined }}>
                                 <button type="button" disabled={videoExporting || playing} className="flex min-w-0 flex-1 items-center gap-2 px-2 py-2 text-left text-xs" onClick={() => selectObject(object.id)}>{object.kind === "character" ? <PersonStanding className="size-3.5 shrink-0" /> : <Cuboid className="size-3.5 shrink-0" />}<span className="truncate">{object.name}</span></button>
                                 {object.kind !== "ground" ? <Tooltip title={`删除${object.name}`}><Button size="small" type="text" danger className="!size-6 shrink-0" disabled={videoExporting || playing || assetUploading || object.locked} aria-label={`删除${object.name}`} icon={<X className="size-3.5" />} onClick={(event) => { event.stopPropagation(); confirmRemoveObject(object.id); }} /></Tooltip> : null}
                             </div>)}
@@ -592,7 +592,7 @@ export function DirectorDeskWorkspace({ open, projectId, node, onClose, onChange
                             <div className="border-t pt-3" style={{ borderColor: theme.node.stroke }}><h3 className="mb-2 text-xs font-medium">导出画幅</h3><Select className="w-full" size="small" disabled={videoExporting || playing} value={node.director.exportSettings.aspectRatio} options={[{ value: "16:9", label: "横屏 16:9" }, { value: "9:16", label: "竖屏 9:16" }, { value: "1:1", label: "方形 1:1" }]} onChange={(aspectRatio) => onChangeSettings(node.id, (current) => ({ ...current, director: { ...current.director, exportSettings: { ...current.director.exportSettings, aspectRatio, width: aspectRatio === "16:9" ? 1280 : 720, height: aspectRatio === "9:16" ? 1280 : 720 } } }))} /></div>
                         </fieldset>
                     </aside>
-                    <main className="relative min-h-0 overflow-hidden" style={{ containerType: "size" }}>
+                    <main className="relative min-h-0 overflow-hidden" style={{ containerType: "size", background: theme.canvas.background }}>
                         <div className="absolute inset-0 grid place-items-center">
                             <div className="relative max-h-full max-w-full overflow-hidden" style={{ aspectRatio: `${node.director.exportSettings.width} / ${node.director.exportSettings.height}`, width: `min(100cqw, calc(100cqh * ${node.director.exportSettings.width} / ${node.director.exportSettings.height}))` }}>
                                 <DirectorDeskScene ref={sceneRef} objects={stageObjects} camera={selectedCamera} cameras={evaluated?.cameras || []} assets={assets} backgroundAssetId={project.background?.assetId}
