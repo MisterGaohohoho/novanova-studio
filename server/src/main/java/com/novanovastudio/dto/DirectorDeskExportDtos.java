@@ -19,30 +19,30 @@ public final class DirectorDeskExportDtos {
 
     /** 创建导演台导出准备会话请求。 */
     public record CreateExportSessionRequest(
-            @NotBlank(message = "画布ID不能为空") String canvasDocumentId,
-            @NotBlank(message = "导演台节点ID不能为空") String directorNodeId,
-            @Min(value = 1, message = "工程修订号必须为正整数") long projectRevision,
-            @NotBlank(message = "机位ID不能为空") String cameraId,
-            @Min(value = 2000, message = "导出时长不能少于2秒") long durationMilliseconds,
-            @Min(value = 1, message = "导出宽度必须为正整数") int width,
-            @Min(value = 1, message = "导出高度必须为正整数") int height,
-            @Min(value = 1, message = "导出帧率必须为正整数") int frameRate,
-            @Min(value = 1, message = "导出帧数必须为正整数") int frameCount,
-            @NotNull(message = "工程快照不能为空") JSONObject projectSnapshot) {
+            @NotBlank(message = "business.canvasIDIsRequired") String canvasDocumentId,
+            @NotBlank(message = "business.directorNodeIDIsRequired") String directorNodeId,
+            @Min(value = 1, message = "business.projectRevisionMustBePositive") long projectRevision,
+            @NotBlank(message = "business.cameraIDIsRequired") String cameraId,
+            @Min(value = 2000, message = "business.exportDurationMustBeAtLeast2Seconds") long durationMilliseconds,
+            @Min(value = 1, message = "business.exportWidthMustBePositive") int width,
+            @Min(value = 1, message = "business.exportHeightMustBePositive") int height,
+            @Min(value = 1, message = "business.exportFrameRateMustBePositive") int frameRate,
+            @Min(value = 1, message = "business.exportFrameCountMustBePositive") int frameCount,
+            @NotNull(message = "business.projectSnapshotIsRequired") JSONObject projectSnapshot) {
     }
 
     /** 导演台帧序列上传请求参数。 */
     public record ExportFrameRequest(
-            @NotBlank(message = "任务ID不能为空") String taskId,
-            @Min(value = 1, message = "帧序号必须从1开始") int frameNumber,
-            @Min(value = 1, message = "帧宽度必须为正整数") int width,
-            @Min(value = 1, message = "帧高度必须为正整数") int height,
-            @NotBlank(message = "帧摘要不能为空") String sha256) {
+            @NotBlank(message = "business.taskIDIsRequired") String taskId,
+            @Min(value = 1, message = "business.frameNumbersStartAt1") int frameNumber,
+            @Min(value = 1, message = "business.frameWidthMustBePositive") int width,
+            @Min(value = 1, message = "business.frameHeightMustBePositive") int height,
+            @NotBlank(message = "business.frameDigestIsRequired") String sha256) {
     }
 
     /** 封存导演台帧序列请求。 */
     public record FinishExportFramesRequest(
-            @NotBlank(message = "任务ID不能为空") String taskId,
-            @Min(value = 1, message = "帧数必须为正整数") int frameCount) {
+            @NotBlank(message = "business.taskIDIsRequired") String taskId,
+            @Min(value = 1, message = "business.frameCountMustBePositive") int frameCount) {
     }
 }

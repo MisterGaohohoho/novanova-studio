@@ -130,6 +130,8 @@ flowchart TB
 | 字段 | 类型 | 说明 |
 | --- | --- | --- |
 | `model_config_id` | `VARCHAR(64)` | 创建任务使用的全站模型配置业务 ID，用于任务恢复时进入正确的模型队列。 |
+| `error_message_key` | `VARCHAR(180)` | 与语言无关的系统消息键，空值表示无系统提示。 |
+| `error_message_arguments` | `JSONB` | 消息插值参数数组；原始诊断保留在 `error_message` 中。 |
 
 ### `video_composition_tasks`
 
@@ -141,7 +143,9 @@ flowchart TB
 | `progress` | `INTEGER` | 当前进度，取值范围为 `0` 至 `100`。 |
 | `source_storage_keys` | `JSONB` | 按最终合成顺序固化的源视频媒体存储键数组。 |
 | `result_data` | `JSONB` | 成片的存储键、URL、MIME、尺寸、字节数和时长。 |
-| `error_message` | `TEXT` | 下载、探测、转码或上传失败时的可展示错误信息。 |
+| `error_message` | `TEXT` | 下载、探测、转码或上传失败时的中文原始诊断。 |
+| `error_message_key` | `VARCHAR(180)` | 与语言无关的系统消息键，空值表示无系统提示。 |
+| `error_message_arguments` | `JSONB` | 消息插值参数数组；原始诊断保留在 `error_message` 中。 |
 | `started_at` | `TIMESTAMPTZ` | 实际开始处理时间。 |
 | `completed_at` | `TIMESTAMPTZ` | 成功、失败或取消的完成时间。 |
 | `created_at` | `TIMESTAMPTZ` | 任务创建时间。 |
@@ -159,7 +163,9 @@ flowchart TB
 | `status` | `VARCHAR(20)` | `queued`、`running`、`success`、`failed`、`canceled`、`interrupted`。 |
 | `plan_id` | `VARCHAR(64)` | 主 Agent 创建后的创作计划 ID，可为空。 |
 | `task_ids` | `JSONB` | 已创建底层 AI 任务 ID 数组，用于精确取消和重启中断。 |
-| `error_message` | `TEXT` | 失败、取消或中断的用户可见说明。 |
+| `error_message` | `TEXT` | 失败、取消或中断的中文诊断。 |
+| `error_message_key` | `VARCHAR(180)` | 与语言无关的系统消息键，空值表示无系统提示。 |
+| `error_message_arguments` | `JSONB` | 消息插值参数数组；原始诊断保留在 `error_message` 中。 |
 | `started_at` | `TIMESTAMPTZ` | 调度器领取后的开始时间。 |
 | `completed_at` | `TIMESTAMPTZ` | 进入终态的完成时间。 |
 | `created_at` | `TIMESTAMPTZ` | 请求创建时间。 |
@@ -469,3 +475,7 @@ CREATE INDEX idx_api_logs_status_code ON api_logs (status_code);
 | AI 任务请求 JSON | `audioReferences` 保存有序音频引用，贯通任务快照、恢复和重试。 |
 
 参考音频在扣费前校验归属及存储元数据：MP3/WAV，单文件不超过 15 MB，最多 3 段，每段 2～15 秒，合计不超过 15 秒。普通画布播放只受文件大小约束。
+
+## 网站双语任务提示（V33）
+
+`V33__Add_Localized_Task_Messages.sql` 为 `ai_generation_tasks`、`creation_agent_request`、`video_composition_tasks` 同步增加 `error_message_key` 与 `error_message_arguments`。写入终态时原子保存诊断、消息键和JSON参数；查询及事件订阅按当前请求语言格式化。主Agent的运行态、取消、中断和失败路径使用相同约束，不需要按语言增加索引。

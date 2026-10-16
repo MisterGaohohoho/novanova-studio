@@ -1,4 +1,4 @@
-import { getAiTaskPollingIntervalMilliseconds, serverPost, type ServerMediaInfo } from "./server";
+import { getAiTaskPollingIntervalMilliseconds, serverPost, type ServerMediaInfo, type ServerSystemMessage } from "./server";
 
 /** 视频合成任务状态。 */
 export type VideoCompositionTaskStatus = "preparing" | "pending" | "running" | "succeeded" | "failed" | "canceled";
@@ -21,6 +21,7 @@ export type VideoCompositionTask = {
     sourceStorageKeys: string[];
     resultData: VideoCompositionResultData;
     errorMessage?: string;
+    systemMessage?: ServerSystemMessage | null;
     startedAt?: string;
     completedAt?: string;
     createdAt?: string;
