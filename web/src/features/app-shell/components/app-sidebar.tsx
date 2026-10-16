@@ -44,7 +44,7 @@ export function AppSidebar() {
                 <span className="sidebar-rail-icon">
                     <Icon className="size-5" />
                 </span>
-                <span className="sidebar-rail-label max-w-full whitespace-normal break-words text-center leading-tight">{translate(tool.labelKey)}</span>
+                <span className="sidebar-rail-label">{translate(tool.labelKey)}</span>
             </Link>
         );
     };
@@ -80,8 +80,8 @@ export function AppSidebar() {
     return (
         <>
             <NotificationDetailModal notification={detailNotification} onClose={() => setDetailNotification(null)} />
-            <aside className="studio-sidebar-rail flex h-dvh w-[88px] shrink-0 flex-col">
-                <div className="flex h-[72px] items-center justify-center border-b border-[var(--studio-line)]">
+            <aside className={cn("studio-sidebar-rail flex h-dvh shrink-0 flex-col", translate.locale === "en" ? "w-28" : "w-[88px]")}>
+                <div className="flex h-[72px] shrink-0 items-center justify-center border-b border-[var(--studio-line)]">
                     <Tooltip title="Novanova Studio" placement="right">
                         <Link href="/" className="sidebar-brand-mark" aria-label={translate("appShell.novanovaStudioHome")}>
                             <img src="/logo/novanovastudio.svg" alt="" aria-hidden="true" className="size-10 object-contain" />
@@ -91,7 +91,7 @@ export function AppSidebar() {
 
                 <nav className="hide-scrollbar flex min-h-0 flex-1 flex-col items-center gap-1.5 overflow-y-auto px-2 pb-3">{visibleTools.map(renderNavItem)}</nav>
 
-                <div className="flex flex-col items-center gap-2 border-t border-[var(--studio-line)] px-2 py-2">
+                <div className="flex shrink-0 flex-col items-center gap-2 border-t border-[var(--studio-line)] px-2 py-2">
                     <Tooltip title={translate("appShell.announcements")} placement="right">
                         {user ? (
                             <Popover
