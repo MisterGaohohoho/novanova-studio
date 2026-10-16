@@ -82,21 +82,11 @@ flowchart LR
 
 - **Infinite canvas**: Compose text, images, videos, reference materials, and generation results in one space while retaining creative context.
 - **Conversational image and video generation**: Generate, edit, reference historical results, and iterate further within one conversation.
-- **Multi-provider model configuration**: Manage AI providers, model capabilities, default models, and credit consumption rules in Configuration & User Preferences.
+- **Multi-provider model configuration**: Manage AI providers, model capabilities, default models, and credit consumption rules in Configuration & User Preferences; video models support tiered credit pricing by specifications such as resolution and duration.
 - **Assets and generation records**: Save reusable assets, generation history, and prompts to reduce repeated uploads and configuration.
 - **Object storage integration**: Supports Tencent Cloud COS, Alibaba Cloud OSS, and Qiniu Kodo for uploads and generated results.
-- **User and operations features**: Email login, OAuth2 login, credits, notifications, a prompt library, home-page showcases, and an administrator console.
+- **User and operations features**: Email login, OAuth2 login, credits with a canvas-header balance shortcut and filterable credit history, notifications, a prompt library, home-page showcases, and an administrator console.
 - **Asynchronous task processing**: Redis Stream consumer groups, task locks, failure recovery, and SSE event streams support traceable long-running tasks.
-
-### 🚀 New in the Current Branch
-
-- **Video generation skills and workflows**: Administrators can manage image and video skills. The video page supports guided clarification, prompt-draft confirmation, first-frame and last-frame image generation, and final video composition.
-- **First/last-frame video mode**: Adds `first-last-frame-to-video`, passing first-frame and last-frame references with explicit media roles to compatible providers.
-- **Custom model calls**: Image and video models can define request/response templates, asynchronous query paths, and placeholders for self-hosted model APIs.
-- **Model presentation settings**: Administrators can configure display names and icons; Evolink models can be synchronized from the provider.
-- **Tiered video billing**: Configure credit prices by video specifications such as resolution and duration; workflow quotes show the cost of each stage.
-- **Credit history and shortcut**: View the balance from the canvas header and open credit history, with filters for additions, spending, refunds, and their sources.
-- **Administration and observability**: Adds skill management, style-cover categories, prompt-cover management, result details, API access logs, and a unified AI-task polling interval setting.
 
 ## 🌟 Key Advantages
 
@@ -110,7 +100,7 @@ Text, reference materials, images, videos, generation tasks, and results can be 
 
 ### 🧩 Skills and workflows for complex creation
 
-Skills use configurable prompts to guide users through structured interactions, while workflows define stages, task roles, and state transitions. For example, the first/last-frame video workflow can move from clarification and prompt confirmation to first-frame generation, last-frame generation, and video composition, with the same mechanism available for future workflows.
+Skills use configurable prompts to guide users through structured interactions, while workflows define stages, task roles, and state transitions. For example, the first/last-frame video workflow (`first-last-frame-to-video`) can move from clarification and prompt confirmation to first-frame generation, last-frame generation, and video composition. First-frame and last-frame references are passed with explicit media roles to compatible providers, and a quote is shown only when the required model capabilities and credit prices are configured for every stage; the same mechanism is available for future workflows.
 
 ### 🔌 Open model and provider integration
 
@@ -126,7 +116,7 @@ Provider keys and object-storage credentials stay on the server. Docker Compose,
 
 ## 🤖 Supported Models and Providers
 
-The project selects an adapter by a provider's `apiFormat` (API request format). Administrators synchronize and configure model names from providers, so there is no fixed, exhaustive model allowlist. Except for the dedicated models explicitly listed below, any model that implements the corresponding provider protocol and API can be added to the relevant image, video, or chat model catalog. Actual availability still depends on the models enabled for the provider account.
+The project selects an adapter by a provider's `apiFormat` (API request format). Administrators synchronize and configure model names from providers, so there is no fixed, exhaustive model allowlist. Any model that implements the corresponding provider protocol and API can be added to the relevant image, video, or chat model catalog. Actual availability still depends on the models enabled for the provider account.
 
 ### Provider Capability Matrix
 
@@ -140,35 +130,6 @@ The project selects an adapter by a provider's `apiFormat` (API request format).
 | MiniMax (`minimax`) | ❌ | ✅ | ❌ | `https://api.minimaxi.com` | Uses the MiniMax H3 video-generation V2 API; the model must be configured manually. |
 | Evolink (`evolink`) | ❌ | ✅ | ❌ | `https://api.evolink.ai/v1` | Uses Evolink's native asynchronous video-generation API and supports model-list synchronization. |
 | Custom (`custom`) | ✅ | ✅ | ❌ | Configured by the administrator | Calls self-hosted image or video APIs through per-model request/response templates; asynchronous video polling is supported and models must be entered manually. |
-
-### Image Generation Models
-
-| Provider | Currently Supported Model Scope | Implemented Capabilities |
-| --- | --- | --- |
-| OpenAI-compatible | Image models that provide the OpenAI Images API; no specific model names are required. | Text-to-image uses `/images/generations`; reference-image editing uses `/images/edits`. |
-| Gemini | Models that return images through Gemini `generateContent`; no specific model names are required. | Text-to-image and reference-image generation; requests both `TEXT` and `IMAGE` response modalities. |
-| Agnes | `agnes-image-2.1-flash` | Text-to-image, image-to-image, and multiple-reference-image generation. |
-
-### Video Generation Models
-
-| Provider | Currently Supported Model Scope | Implemented Capabilities |
-| --- | --- | --- |
-| OpenAI-compatible | Video models that provide an OpenAI-compatible Videos API; no specific model names are required. | Text-to-video and up to seven reference images; video references are not supported. |
-| Agnes | `agnes-video-v2.0` | Text-to-video with single-image or multiple-image references; video references are not supported. |
-| Seedance | Doubao Seedance 2.0 series, Doubao Seedance 1.5 Pro, Doubao Seedance 1.0 Pro, Doubao Seedance 1.0 Pro Fast, and model IDs or inference endpoint IDs compatible with the same task API. | Text-to-video and reference-image generation; the Seedance 2.0 series supports up to nine reference images and three reference videos. |
-| MiniMax | `MiniMax-H3` | Text-to-video with image or video references; supports up to nine reference images and three reference videos, `768P` or `2K` resolution, and 4-15 second durations. |
-| Evolink | Seedance 2.0 models enabled in Evolink | Text-to-video and image/video references through Evolink's `/v1/videos/generations` and `/v1/tasks/{task_id}` asynchronous APIs. |
-| Custom | Models configured by the administrator | Calls a self-hosted video API through model templates, with text-to-video, reference materials, and asynchronous polling determined by the configuration. |
-
-The first/last-frame skill workflow contains three default stages: **Generate first frame**, **Generate last frame**, and **Compose video**. A quote is available only when the required model capabilities and credit prices are configured for every stage.
-
-### Chat Models
-
-| Provider | Currently Supported Model Scope | API and Use |
-| --- | --- | --- |
-| OpenAI-compatible | GPT-series models and other models that implement the OpenAI Chat Completions protocol; no specific model names are required. | `/chat/completions`, with streaming output and Agent tool invocation. |
-| Gemini | Gemini text or multimodal chat models; no specific model names are required. | Gemini's native API for primary-Agent conversations and task planning. |
-| Anthropic | Claude-series models; no specific model names are required. | `/v1/messages`, with streaming output and Agent tool invocation. |
 
 > ⚠️ A model being available from a provider does not mean it has the corresponding generation capability. Administrators must still mark each model as text, image, or video, configure its specific capabilities, and set default models for each type.
 
