@@ -1,5 +1,7 @@
 package com.novanovastudio.service;
 
+import com.novanovastudio.common.SystemMessage;
+
 import com.alibaba.fastjson2.JSON;
 import com.alibaba.fastjson2.JSONArray;
 import com.alibaba.fastjson2.JSONObject;
@@ -217,7 +219,7 @@ public class VideoCompositionTaskService {
     public Mono<VideoCompositionDtos.VideoCompositionTaskResponse> getTask(String taskId) {
         return currentUserProvider.currentUserId()
                 .flatMap(userId -> repository.getTask(userId, taskId)
-                        .switchIfEmpty(Mono.error(new BusinessException(ErrorCode.RESOURCE_NOT_FOUND, "视频合成任务不存在")))
+                        .switchIfEmpty(Mono.error(new BusinessException(ErrorCode.RESOURCE_NOT_FOUND, SystemMessage.of("business.videoCompositionTaskNotFound"))))
                         .map(this::taskResponse));
     }
 
@@ -229,7 +231,7 @@ public class VideoCompositionTaskService {
      */
     public Mono<VideoCompositionDtos.VideoCompositionTaskResponse> cancelTask(String taskId) {
         return currentUserProvider.currentUserId().flatMap(userId -> repository.getTask(userId, taskId)
-                .switchIfEmpty(Mono.error(new BusinessException(ErrorCode.RESOURCE_NOT_FOUND, "视频合成任务不存在")))
+                .switchIfEmpty(Mono.error(new BusinessException(ErrorCode.RESOURCE_NOT_FOUND, SystemMessage.of("business.videoCompositionTaskNotFound"))))
                 .flatMap(task -> {
                     if (isTerminal(task.getStatus())) {
                         return Mono.just(taskResponse(task));
@@ -255,7 +257,7 @@ public class VideoCompositionTaskService {
                 .flatMap(count -> {
                     int maximumPreparingTasks = Math.max(1, properties.getAi().getVideoComposition().getDirectorDeskMaximumPreparingTasks());
                     if (count >= maximumPreparingTasks) {
-                        return Mono.error(new BusinessException(ErrorCode.BUSINESS_ERROR, "同时准备的导演台导出任务已达到上限，请先完成或取消已有任务"));
+                        return Mono.error(new BusinessException(ErrorCode.BUSINESS_ERROR, SystemMessage.of("business.directorExportPreparationLimitReachedFinishOrCancelAnExisting")));
                     }
                     return persistenceService.getProject(request.canvasDocumentId());
                 })
@@ -301,14 +303,14 @@ public class VideoCompositionTaskService {
             DirectorDeskExportDtos.ExportFrameRequest request, FilePart file) {
         return withDirectorDeskUploadSlot(() -> currentUserProvider.currentUserId()
                 .flatMap(userId -> repository.getTask(userId, request.taskId())
-                        .switchIfEmpty(Mono.error(new BusinessException(ErrorCode.RESOURCE_NOT_FOUND, "导演台导出任务不存在")))
+                        .switchIfEmpty(Mono.error(new BusinessException(ErrorCode.RESOURCE_NOT_FOUND, SystemMessage.of("business.directorExportTaskNotFound"))))
                         .flatMap(task -> {
                             JSONObject snapshot = parseDirectorSnapshot(task);
                             ensureDirectorPreparingTask(task, snapshot, request.frameNumber(), request.width(), request.height(), request.sha256());
                             JSONObject existing = findFrame(snapshot.getJSONArray("frames"), request.frameNumber());
                             if (existing != null) {
                                 if (!request.sha256().equalsIgnoreCase(existing.getString("sha256"))) {
-                                    throw new BusinessException(ErrorCode.PARAM_INVALID, "同一帧序号的内容摘要不一致");
+                                    throw new BusinessException(ErrorCode.PARAM_INVALID, SystemMessage.of("business.digestMismatchForTheSameFrameNumber"));
                                 }
                                 return Mono.just(taskResponse(task));
                             }
@@ -354,11 +356,11 @@ public class VideoCompositionTaskService {
                             Mono<Void> cleanup = media.storageKey().equals(latestFrame == null ? null : latestFrame.getString("storageKey"))
                                     ? Mono.empty()
                                     : persistenceService.deleteMediaForUser(userId, List.of(media.storageKey()));
-                            String message = latestFrame == null ? "导演台导出任务已不在准备状态或帧容量已达上限" : "同一帧序号的内容摘要不一致";
+                            SystemMessage message = SystemMessage.of(latestFrame == null ? "business.directorExportIsNoLongerPreparingOrItsFrameCapacity" : "business.digestMismatchForTheSameFrameNumber");
                             return cleanup.then(Mono.error(new BusinessException(ErrorCode.BUSINESS_ERROR, message)));
                         })
                         .switchIfEmpty(persistenceService.deleteMediaForUser(userId, List.of(media.storageKey()))
-                                .then(Mono.error(new BusinessException(ErrorCode.RESOURCE_NOT_FOUND, "导演台导出任务不存在"))))));
+                                .then(Mono.error(new BusinessException(ErrorCode.RESOURCE_NOT_FOUND, SystemMessage.of("business.directorExportTaskNotFound")))))));
     }
 
     /**
@@ -370,7 +372,7 @@ public class VideoCompositionTaskService {
     public Mono<VideoCompositionDtos.VideoCompositionTaskResponse> finishDirectorDeskExportFrames(
             DirectorDeskExportDtos.FinishExportFramesRequest request) {
         return currentUserProvider.currentUserId().flatMap(userId -> repository.getTask(userId, request.taskId())
-                .switchIfEmpty(Mono.error(new BusinessException(ErrorCode.RESOURCE_NOT_FOUND, "导演台导出任务不存在")))
+                .switchIfEmpty(Mono.error(new BusinessException(ErrorCode.RESOURCE_NOT_FOUND, SystemMessage.of("business.directorExportTaskNotFound"))))
                 .flatMap(task -> {
                     if (isTerminal(task.getStatus()) || !"preparing".equals(task.getStatus())) return Mono.just(taskResponse(task));
                     JSONObject snapshot = parseDirectorSnapshot(task);
@@ -629,10 +631,10 @@ public class VideoCompositionTaskService {
                 .onErrorReturn(false)
                 .flatMap(cancelRequested -> {
                     if (Boolean.TRUE.equals(cancelRequested)) {
-                        return repository.finishRunningTask(task.getId(), STATUS_CANCELED, "{}", "任务已取消")
+                        return repository.finishRunningTask(task.getId(), STATUS_CANCELED, "{}", SystemMessage.of("system.taskCanceled"))
                                 .then(persistenceService.deleteMediaForUser(task.getUserId(), List.of(media.storageKey())));
                     }
-                    return repository.finishRunningTask(task.getId(), STATUS_SUCCEEDED, result.toJSONString(), "")
+                    return repository.finishRunningTask(task.getId(), STATUS_SUCCEEDED, result.toJSONString(), null)
                             .flatMap(updated -> {
                                 if (Boolean.TRUE.equals(updated)) {
                                     log.info("视频合成任务执行成功: taskId={}, storageKey={}", task.getId(), media.storageKey());
@@ -657,10 +659,10 @@ public class VideoCompositionTaskService {
                 .onErrorReturn(false)
                 .flatMap(cancelRequested -> {
                     if (canceled || Boolean.TRUE.equals(cancelRequested)) {
-                        return repository.finishRunningTask(task.getId(), STATUS_CANCELED, "{}", "任务已取消")
+                        return repository.finishRunningTask(task.getId(), STATUS_CANCELED, "{}", SystemMessage.of("system.taskCanceled"))
                                 .then(cleanupDirectorFrames(task));
                     }
-                    String message = errorMessage(exception);
+                    SystemMessage message = SystemMessage.fromThrowable(exception);
                     log.error("视频合成任务执行失败: taskId={}", task.getId(), exception);
                     return repository.finishRunningTask(task.getId(), STATUS_FAILED, "{}", message)
                             .then(cleanupDirectorFrames(task));
@@ -669,20 +671,20 @@ public class VideoCompositionTaskService {
 
     /** 校验导演台导出固定预设。 */
     private void validateDirectorDeskExportRequest(DirectorDeskExportDtos.CreateExportSessionRequest request) {
-        if (request == null) throw new BusinessException(ErrorCode.PARAM_MISSING, "导演台导出参数不能为空");
-        if (request.frameRate() != DIRECTOR_DESK_FRAME_RATE) throw new BusinessException(ErrorCode.PARAM_INVALID, "导演台导出帧率必须固定为30帧/秒");
+        if (request == null) throw new BusinessException(ErrorCode.PARAM_MISSING, SystemMessage.of("business.directorExportParametersAreRequired"));
+        if (request.frameRate() != DIRECTOR_DESK_FRAME_RATE) throw new BusinessException(ErrorCode.PARAM_INVALID, SystemMessage.of("business.directorExportFrameRateMustBe30Fps"));
         if (request.durationMilliseconds() < DIRECTOR_DESK_MINIMUM_DURATION_MILLISECONDS || request.durationMilliseconds() > DIRECTOR_DESK_MAXIMUM_DURATION_MILLISECONDS) {
-            throw new BusinessException(ErrorCode.PARAM_INVALID, "导演台视频时长必须在2到15秒之间");
+            throw new BusinessException(ErrorCode.PARAM_INVALID, SystemMessage.of("business.directorVideoDurationMustBe215Seconds"));
         }
         if (request.durationMilliseconds() % 1000 != 0 || request.frameCount() != request.durationMilliseconds() / 1000 * DIRECTOR_DESK_FRAME_RATE) {
-            throw new BusinessException(ErrorCode.PARAM_INVALID, "导演台时长与帧数必须按30帧/秒整秒计算");
+            throw new BusinessException(ErrorCode.PARAM_INVALID, SystemMessage.of("business.directorDurationAndFrameCountMustUseWholeSecondsAt"));
         }
         boolean validSize = (request.width() == 1280 && request.height() == 720)
                 || (request.width() == 720 && request.height() == 1280)
                 || (request.width() == 720 && request.height() == 720);
-        if (!validSize) throw new BusinessException(ErrorCode.PARAM_INVALID, "导演台导出尺寸不符合首版画幅预设");
+        if (!validSize) throw new BusinessException(ErrorCode.PARAM_INVALID, SystemMessage.of("business.directorExportDimensionsDoNotMatchSupportedPresets"));
         if (request.projectSnapshot() == null || !request.projectSnapshot().containsKey("schemaVersion")) {
-            throw new BusinessException(ErrorCode.PARAM_INVALID, "导演台工程快照无效");
+            throw new BusinessException(ErrorCode.PARAM_INVALID, SystemMessage.of("business.invalidDirectorProjectSnapshot"));
         }
     }
 
@@ -696,20 +698,20 @@ public class VideoCompositionTaskService {
                 .findFirst()
                 .orElse(null);
         if (node == null || !"directorDesk".equals(node.getString("kind"))) {
-            return Mono.error(new BusinessException(ErrorCode.PARAM_INVALID, "画布中的导演台节点不存在"));
+            return Mono.error(new BusinessException(ErrorCode.PARAM_INVALID, SystemMessage.of("business.directorNodeNotFoundOnCanvas")));
         }
         JSONObject director = node.getJSONObject("director");
         if (director == null || director.getLongValue("projectRevision") != request.projectRevision()) {
-            return Mono.error(new BusinessException(ErrorCode.BUSINESS_ERROR, "导演台工程尚未保存到当前修订，请刷新后重试"));
+            return Mono.error(new BusinessException(ErrorCode.BUSINESS_ERROR, SystemMessage.of("business.projectRevisionIsNotSavedRefreshAndRetry")));
         }
         JSONObject savedProject = director.getJSONObject("project");
         if (savedProject == null || !canonicalJson(savedProject).equals(canonicalJson(request.projectSnapshot()))) {
-            return Mono.error(new BusinessException(ErrorCode.BUSINESS_ERROR, "导出工程快照与已保存工程不一致，请刷新后重试"));
+            return Mono.error(new BusinessException(ErrorCode.BUSINESS_ERROR, SystemMessage.of("business.exportSnapshotDiffersFromSavedProjectRefreshAndRetry")));
         }
         JSONArray cameras = savedProject.getJSONArray("cameras");
         boolean cameraExists = cameras != null && cameras.stream().anyMatch(item -> item instanceof JSONObject value && request.cameraId().equals(value.getString("id")));
         if (!cameraExists) {
-            return Mono.error(new BusinessException(ErrorCode.PARAM_INVALID, "导演台机位不存在"));
+            return Mono.error(new BusinessException(ErrorCode.PARAM_INVALID, SystemMessage.of("business.directorCameraNotFound")));
         }
         return Mono.empty();
     }
@@ -742,19 +744,19 @@ public class VideoCompositionTaskService {
 
     /** 读取导演台任务快照。 */
     private JSONObject parseDirectorSnapshot(VideoCompositionTask task) {
-        if (!TASK_TYPE_DIRECTOR_DESK_EXPORT.equals(task.getTaskType())) throw new BusinessException(ErrorCode.PARAM_INVALID, "任务不是导演台导出任务");
+        if (!TASK_TYPE_DIRECTOR_DESK_EXPORT.equals(task.getTaskType())) throw new BusinessException(ErrorCode.PARAM_INVALID, SystemMessage.of("business.taskIsNotADirectorExport"));
         JSONObject snapshot = parseJsonObject(task.getSourceStorageKeys());
-        if (!TASK_TYPE_DIRECTOR_DESK_EXPORT.equals(snapshot.getString("kind"))) throw new BusinessException(ErrorCode.BUSINESS_ERROR, "导演台导出任务快照无效");
+        if (!TASK_TYPE_DIRECTOR_DESK_EXPORT.equals(snapshot.getString("kind"))) throw new BusinessException(ErrorCode.BUSINESS_ERROR, SystemMessage.of("business.invalidDirectorExportSnapshot"));
         if (snapshot.getJSONArray("frames") == null) snapshot.put("frames", new JSONArray());
         return snapshot;
     }
 
     /** 校验准备任务与单帧参数一致。 */
     private void ensureDirectorPreparingTask(VideoCompositionTask task, JSONObject snapshot, int frameNumber, int width, int height, String sha256) {
-        if (!"preparing".equals(task.getStatus())) throw new BusinessException(ErrorCode.BUSINESS_ERROR, "导演台导出任务已封存，不能继续上传帧");
-        if (frameNumber < 1 || frameNumber > snapshot.getIntValue("frameCount")) throw new BusinessException(ErrorCode.PARAM_INVALID, "导演台帧序号超出导出范围");
-        if (width != snapshot.getIntValue("width") || height != snapshot.getIntValue("height")) throw new BusinessException(ErrorCode.PARAM_INVALID, "导演台帧尺寸与导出预设不一致");
-        if (!StringUtils.hasText(sha256) || !sha256.matches("[0-9a-fA-F]{64}")) throw new BusinessException(ErrorCode.PARAM_INVALID, "导演台帧摘要格式无效");
+        if (!"preparing".equals(task.getStatus())) throw new BusinessException(ErrorCode.BUSINESS_ERROR, SystemMessage.of("business.directorExportIsSealedCannotUploadMoreFrames"));
+        if (frameNumber < 1 || frameNumber > snapshot.getIntValue("frameCount")) throw new BusinessException(ErrorCode.PARAM_INVALID, SystemMessage.of("business.directorFrameNumberIsOutOfRange"));
+        if (width != snapshot.getIntValue("width") || height != snapshot.getIntValue("height")) throw new BusinessException(ErrorCode.PARAM_INVALID, SystemMessage.of("business.directorFrameDimensionsDifferFromPreset"));
+        if (!StringUtils.hasText(sha256) || !sha256.matches("[0-9a-fA-F]{64}")) throw new BusinessException(ErrorCode.PARAM_INVALID, SystemMessage.of("business.invalidDirectorFrameDigest"));
     }
 
     /** 查找已接收帧，支持重复上传幂等。 */
@@ -770,13 +772,13 @@ public class VideoCompositionTaskService {
     /** 校验导演台帧序列完整、连续且尺寸一致。 */
     private void validateDirectorFrameManifest(JSONObject snapshot, int frameCount) {
         int expected = snapshot.getIntValue("frameCount");
-        if (frameCount != expected) throw new BusinessException(ErrorCode.PARAM_INVALID, "封存帧数与导出预设不一致");
+        if (frameCount != expected) throw new BusinessException(ErrorCode.PARAM_INVALID, SystemMessage.of("business.sealedFrameCountDiffersFromPreset"));
         JSONArray frames = snapshot.getJSONArray("frames");
-        if (frames == null || frames.size() != expected) throw new BusinessException(ErrorCode.PARAM_INVALID, "导演台导出存在缺失帧");
+        if (frames == null || frames.size() != expected) throw new BusinessException(ErrorCode.PARAM_INVALID, SystemMessage.of("business.directorExportHasMissingFrames"));
         for (int index = 0; index < expected; index += 1) {
             JSONObject frame = findFrame(frames, index + 1);
             if (frame == null || frame.getIntValue("width") != snapshot.getIntValue("width") || frame.getIntValue("height") != snapshot.getIntValue("height") || !StringUtils.hasText(frame.getString("storageKey"))) {
-                throw new BusinessException(ErrorCode.PARAM_INVALID, "导演台帧清单不连续或尺寸不一致");
+                throw new BusinessException(ErrorCode.PARAM_INVALID, SystemMessage.of("business.directorFrameSequenceOrDimensionsAreInconsistent"));
             }
         }
     }
@@ -813,7 +815,7 @@ public class VideoCompositionTaskService {
             int currentUploads = directorDeskUploadCount.incrementAndGet();
             if (currentUploads > maximumUploads) {
                 directorDeskUploadCount.decrementAndGet();
-                return Mono.error(new BusinessException(ErrorCode.BUSINESS_ERROR, "导演台帧上传并发已达到上限，请稍后重试"));
+                return Mono.error(new BusinessException(ErrorCode.BUSINESS_ERROR, SystemMessage.of("business.directorFrameUploadConcurrencyLimitReachedRetryLater")));
             }
             return operation.get().doFinally(signalType -> directorDeskUploadCount.decrementAndGet());
         });
@@ -827,18 +829,18 @@ public class VideoCompositionTaskService {
      */
     private List<String> normalizeSourceStorageKeys(List<String> sourceStorageKeys) {
         if (sourceStorageKeys == null || sourceStorageKeys.size() < 2) {
-            throw new BusinessException(ErrorCode.PARAM_INVALID, "至少需要两个视频才能合成");
+            throw new BusinessException(ErrorCode.PARAM_INVALID, SystemMessage.of("business.atLeastTwoVideosAreRequiredForComposition"));
         }
         if (sourceStorageKeys.size() > MAXIMUM_SOURCE_VIDEO_COUNT) {
-            throw new BusinessException(ErrorCode.PARAM_INVALID, "单次最多合成20个视频");
+            throw new BusinessException(ErrorCode.PARAM_INVALID, SystemMessage.of("business.atMost20VideosPerComposition"));
         }
         List<String> normalized = sourceStorageKeys.stream().map(value -> value == null ? "" : value.trim()).toList();
         if (normalized.stream().anyMatch(value -> !StringUtils.hasText(value))) {
-            throw new BusinessException(ErrorCode.PARAM_INVALID, "视频媒体存储键不能为空");
+            throw new BusinessException(ErrorCode.PARAM_INVALID, SystemMessage.of("business.videoStorageKeyIsRequired"));
         }
         Set<String> uniqueStorageKeys = new HashSet<>(normalized);
         if (uniqueStorageKeys.size() != normalized.size()) {
-            throw new BusinessException(ErrorCode.PARAM_INVALID, "同一视频不能重复参与合成");
+            throw new BusinessException(ErrorCode.PARAM_INVALID, SystemMessage.of("business.theSameVideoCannotBeComposedTwice"));
         }
         return normalized;
     }
@@ -855,7 +857,7 @@ public class VideoCompositionTaskService {
         } catch (BusinessException exception) {
             throw exception;
         } catch (Exception exception) {
-            throw new BusinessException(ErrorCode.BUSINESS_ERROR, "视频合成任务缺少有效的源视频快照");
+            throw new BusinessException(ErrorCode.BUSINESS_ERROR, SystemMessage.of("business.compositionTaskHasNoValidSourceVideoSnapshot"));
         }
     }
 
@@ -868,7 +870,7 @@ public class VideoCompositionTaskService {
     private VideoCompositionDtos.VideoCompositionTaskResponse taskResponse(VideoCompositionTask task) {
         return new VideoCompositionDtos.VideoCompositionTaskResponse(
                 task.getId(), task.getStatus(), task.getProgress(), readTaskSourceStorageKeys(task),
-                parseJsonObject(task.getResultData()), task.getErrorMessage(), formatTime(task.getStartedAt()),
+                parseJsonObject(task.getResultData()), task.getErrorMessage(), SystemMessage.stored(task.getErrorMessageKey(), task.getErrorMessageArguments()), formatTime(task.getStartedAt()),
                 formatTime(task.getCompletedAt()), formatTime(task.getCreatedAt()), formatTime(task.getUpdatedAt())
         );
     }

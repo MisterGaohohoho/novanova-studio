@@ -293,6 +293,8 @@ public final class RowMappers {
         task.setRequestData(jsonText(row, "request_data"));
         task.setResultData(jsonText(row, "result_data"));
         task.setErrorMessage(row.get("error_message", String.class));
+        task.setErrorMessageKey(row.get("error_message_key", String.class));
+        task.setErrorMessageArguments(jsonText(row, "error_message_arguments"));
         task.setStartedAt(row.get("started_at", OffsetDateTime.class));
         task.setCompletedAt(row.get("completed_at", OffsetDateTime.class));
         task.setCreatedAt(row.get("created_at", OffsetDateTime.class));
@@ -317,6 +319,8 @@ public final class RowMappers {
         task.setSourceStorageKeys(jsonText(row, "source_storage_keys"));
         task.setResultData(jsonText(row, "result_data"));
         task.setErrorMessage(row.get("error_message", String.class));
+        task.setErrorMessageKey(row.get("error_message_key", String.class));
+        task.setErrorMessageArguments(jsonText(row, "error_message_arguments"));
         task.setStartedAt(row.get("started_at", OffsetDateTime.class));
         task.setCompletedAt(row.get("completed_at", OffsetDateTime.class));
         task.setCreatedAt(row.get("created_at", OffsetDateTime.class));
