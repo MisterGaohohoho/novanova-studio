@@ -6,10 +6,11 @@ import { useTranslation } from "@/features/locale/use-translation";
 
 import { App, Button, Input, Popover, Tooltip } from "antd";
 import type { TextAreaRef } from "antd/es/input/TextArea";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type ClipboardEvent, type KeyboardEvent } from "react";
 import { ArrowUp, BookOpenText, Bot, LoaderCircle, Square, X } from "lucide-react";
 
 import type { CreationComposerProps } from "@/features/generation/components/creation-workspace-types";
+import { ReferencePromptInput, type ReferencePromptInputHandle } from "@/features/generation/components/reference-prompt-input";
 import { CreditCostDisplay } from "@/features/generation/constants/credits";
 import { GenerationStyleCover, GenerationStyleMenu } from "@/features/generation/components/generation-style-picker";
 import { filterGenerationStyles, MAX_GENERATION_STYLE_SELECTION_COUNT } from "@/features/generation/lib/generation-style-library";
@@ -21,6 +22,7 @@ export function CreationComposer({
     value,
     placeholder,
     references,
+    imageReferences,
     styleOptions,
     selectedStyles,
     styleLoading,
@@ -50,6 +52,7 @@ export function CreationComposer({
     const translate = useTranslation();
     const { message } = App.useApp();
     const inputRef = useRef<TextAreaRef>(null);
+    const referenceInputRef = useRef<ReferencePromptInputHandle>(null);
     const focusedValueRef = useRef(false);
     const [styleMenuOpen, setStyleMenuOpenState] = useState(false);
     const [styleQuery, setStyleQuery] = useState("");
@@ -66,10 +69,21 @@ export function CreationComposer({
         return filterGenerationStyles(availableStyles, styleQuery);
     }, [availableStyles, styleQuery, translate.locale]);
 
+    const focusInput = (start = value.length, end = start) => {
+        if (imageReferences) {
+            referenceInputRef.current?.focus();
+            referenceInputRef.current?.setSelectionRange(start, end);
+        } else {
+            const textarea = inputRef.current?.resizableTextArea?.textArea;
+            textarea?.focus();
+            textarea?.setSelectionRange(start, end);
+        }
+    };
+
     useEffect(() => {
         if (!focusWhenValueSet || !value.trim() || focusedValueRef.current) return;
         focusedValueRef.current = true;
-        requestAnimationFrame(() => inputRef.current?.focus({ cursor: "end" }));
+        requestAnimationFrame(() => focusInput());
     }, [focusWhenValueSet, value]);
 
     useEffect(() => {
@@ -98,11 +112,7 @@ export function CreationComposer({
         if (styleCommand) {
             const nextValue = removeStyleCommand(value, styleCommand.start, styleCommand.end);
             onChange(nextValue);
-            requestAnimationFrame(() => {
-                const textarea = inputRef.current?.resizableTextArea?.textArea;
-                textarea?.focus();
-                textarea?.setSelectionRange(styleCommand.start, styleCommand.start);
-            });
+            requestAnimationFrame(() => focusInput(styleCommand.start));
         }
         setStyleCommand(null);
         setStyleQuery("");
@@ -120,7 +130,7 @@ export function CreationComposer({
         setStyleQuery("");
         setHighlightedStyleIndex(0);
         setStyleMenuOpenState(true);
-        requestAnimationFrame(() => inputRef.current?.focus({ cursor: "end" }));
+        requestAnimationFrame(() => focusInput());
     };
 
     const pasteStyleMessage = (pastedText: string) => {
@@ -128,8 +138,9 @@ export function CreationComposer({
         const parsed = parseGenerationStyleMessage(pastedText, availableStyles);
         if (!parsed) return false;
         const textarea = inputRef.current?.resizableTextArea?.textArea;
-        const start = textarea?.selectionStart ?? value.length;
-        const end = textarea?.selectionEnd ?? start;
+        const selection = referenceInputRef.current?.getSelection();
+        const start = selection?.start ?? textarea?.selectionStart ?? value.length;
+        const end = selection?.end ?? textarea?.selectionEnd ?? start;
         const additions = parsed.styles.filter((style) => !activeStyles.some((selected) => selected.id === style.id));
         const remaining = Math.max(0, MAX_GENERATION_STYLE_SELECTION_COUNT - activeStyles.length);
         if (additions.length > remaining) {
@@ -141,13 +152,54 @@ export function CreationComposer({
         setStyleCommand(null);
         setStyleQuery("");
         closeStyleMenu();
-        requestAnimationFrame(() => {
-            const nextTextarea = inputRef.current?.resizableTextArea?.textArea;
-            const cursor = start + parsed.prompt.length;
-            nextTextarea?.focus();
-            nextTextarea?.setSelectionRange(cursor, cursor);
-        });
+        requestAnimationFrame(() => focusInput(start + parsed.prompt.length));
         return true;
+    };
+
+    const handlePaste = (event: ClipboardEvent) => {
+        const pastedText = event.clipboardData.getData("text/plain");
+        if (pasteStyleMessage(pastedText)) {
+            event.preventDefault();
+            return;
+        }
+        const images = Array.from(event.clipboardData.items)
+            .filter((item) => item.kind === "file" && item.type.startsWith("image/"))
+            .map((item) => item.getAsFile())
+            .filter((file): file is File => file !== null);
+        if (!images.length || !onPasteImages) return;
+        event.preventDefault();
+        onPasteImages(images);
+    };
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+        if (event.nativeEvent.isComposing) return;
+        if (styleMenuOpen) {
+            if (event.key === "ArrowDown") {
+                event.preventDefault();
+                setHighlightedStyleIndex((current) => Math.min(current + 1, Math.max(0, filteredStyles.length - 1)));
+                return;
+            }
+            if (event.key === "ArrowUp") {
+                event.preventDefault();
+                setHighlightedStyleIndex((current) => Math.max(0, current - 1));
+                return;
+            }
+            if (event.key === "Enter" && !event.shiftKey) {
+                event.preventDefault();
+                const style = filteredStyles[highlightedStyleIndex];
+                if (style) chooseStyle(style);
+                return;
+            }
+            if (event.key === "Escape") {
+                event.preventDefault();
+                closeStyleMenu();
+                return;
+            }
+        }
+        if (event.key === "Enter" && !event.shiftKey) {
+            event.preventDefault();
+            if (canSubmit && !requestActive) onSubmit();
+        }
     };
 
     const renderAction = (action: CreationComposerProps["actions"][number]) => {
@@ -224,59 +276,25 @@ export function CreationComposer({
                     ) : null}
 
                     <div className={`creation-composer-input-shell relative${compact ? " creation-composer-input-shell-compact" : ""}`}>
-                        <Input.TextArea
+                        {imageReferences ? <ReferencePromptInput
+                            ref={referenceInputRef}
+                            value={value}
+                            placeholder={placeholder}
+                            images={imageReferences}
+                            compact={compact}
+                            onChange={updatePrompt}
+                            onKeyDown={handleKeyDown}
+                            onPaste={handlePaste}
+                        /> : <Input.TextArea
                             ref={inputRef}
                             value={value}
                             autoSize={compact ? { minRows: 1, maxRows: 6 } : { minRows: 3, maxRows: 6 }}
                             placeholder={placeholder}
                             className="creation-composer-textarea"
                             onChange={(event) => updatePrompt(event.target.value, event.target.selectionStart ?? event.target.value.length)}
-                            onPaste={(event) => {
-                                const pastedText = event.clipboardData.getData("text/plain");
-                                if (pasteStyleMessage(pastedText)) {
-                                    event.preventDefault();
-                                    return;
-                                }
-                                const images = Array.from(event.clipboardData.items)
-                                    .filter((item) => item.kind === "file" && item.type.startsWith("image/"))
-                                    .map((item) => item.getAsFile())
-                                    .filter((file): file is File => file !== null);
-                                if (!images.length || !onPasteImages) return;
-                                event.preventDefault();
-                                onPasteImages(images);
-                            }}
-                            onKeyDown={(event) => {
-                                if (styleMenuOpen) {
-                                    if (event.key === "ArrowDown") {
-                                        event.preventDefault();
-                                        setHighlightedStyleIndex((current) => Math.min(current + 1, Math.max(0, filteredStyles.length - 1)));
-                                        return;
-                                    }
-                                    if (event.key === "ArrowUp") {
-                                        event.preventDefault();
-                                        setHighlightedStyleIndex((current) => Math.max(0, current - 1));
-                                        return;
-                                    }
-                                    if (event.key === "Enter" && !event.shiftKey) {
-                                        event.preventDefault();
-                                        const style = filteredStyles[highlightedStyleIndex];
-                                        if (style) chooseStyle(style);
-                                        return;
-                                    }
-                                    if (event.key === "Escape") {
-                                        event.preventDefault();
-                                        closeStyleMenu();
-                                        return;
-                                    }
-                                }
-                                if (event.key === "Enter" && !event.shiftKey) {
-                                    event.preventDefault();
-                                    if (canSubmit && !requestActive) {
-                                        onSubmit();
-                                    }
-                                }
-                            }}
-                        />
+                            onPaste={handlePaste}
+                            onKeyDown={handleKeyDown}
+                        />}
                     </div>
 
                     <div className={`creation-composer-toolbar flex flex-wrap items-center gap-2 overflow-hidden transition-all duration-200 ${compact ? "invisible mt-0 max-h-0 opacity-0" : "mt-3 max-h-24 opacity-100"}`}>
