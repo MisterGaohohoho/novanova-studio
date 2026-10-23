@@ -47,7 +47,7 @@
         <img src="https://ai-flow-1253318092.cos.ap-singapore.myqcloud.com/novanova-studio/docs/wechat_me.png" alt="作者微信二维码" width="220" />
       </td>
       <td align="center" width="33%">
-        <img src="https://ai-flow-1253318092.cos.ap-singapore.myqcloud.com/novanova-studio/docs/wechat-group.png" alt="交流群二维码" width="220" />
+        <img src="https://ai-flow-1253318092.cos.ap-singapore.myqcloud.com/novanova-studio/docs/wechat-group2.png" alt="交流群二维码" width="220" />
       </td>
     </tr>
   </tbody>
