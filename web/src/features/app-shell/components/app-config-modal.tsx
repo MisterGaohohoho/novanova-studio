@@ -60,7 +60,7 @@ import {
 } from "@/services/api/server";
 import type { ObjectStorageConfig, ObjectStorageProvider } from "@/shared/types/object-storage";
 import { blockingModelConfigDependencyIssues, createDraftModelConfigs, modelConfigDependencyIssues, reconcileModelConfigDraft, updateModelConfigSelection } from "./model-config-draft";
-import { cloneImageSizeMappings, normalizeImageSizeMappings, type ImageSizeMappings } from "@/features/generation/lib/image-size-mappings";
+import { cloneImageSizeMappings, IMAGE_RESOLUTIONS, normalizeImageSizeMappings, type ImageResolution, type ImageSizeMappings } from "@/features/generation/lib/image-size-mappings";
 import { ImageSizeMappingsEditor } from "./image-size-mappings-editor";
 import { ModelSelectModal, type ChannelModelGroup } from "./model-select-modal";
 
@@ -401,6 +401,17 @@ export function AppConfigModal() {
         setEditingModelConfig((configItem) => (configItem ? { ...configItem, ...patch } : configItem));
     };
 
+    /** 图片分辨率价格留空表示该档位沿用模型单价。 */
+    const updateImageResolutionPrice = (resolution: ImageResolution, value: number | null) => {
+        setEditingModelConfig((configItem) => {
+            if (!configItem) return configItem;
+            const resolutionPrices = { ...(configItem.imageBillingConfiguration?.resolutionPrices || {}) };
+            if (value === null) delete resolutionPrices[resolution];
+            else resolutionPrices[resolution] = value;
+            return { ...configItem, imageBillingConfiguration: Object.keys(resolutionPrices).length ? { resolutionPrices } : null };
+        });
+    };
+
     const saveModelConfigEditor = () => {
         if (!editingModelConfig) return;
         let customBodyParameters: Record<string, unknown>;
@@ -488,6 +499,7 @@ export function AppConfigModal() {
                     imageSizeMappings: normalizedConfig.imageSizeMappings,
                     customBodyParameters: normalizedConfig.customBodyParameters,
                     videoBillingConfiguration: normalizedConfig.videoBillingConfiguration,
+                    imageBillingConfiguration: normalizedConfig.imageBillingConfiguration,
                     displayName: normalizedConfig.displayName,
                     modelIcon: normalizedConfig.modelIcon,
                     isCustomModel: normalizedConfig.isCustomModel,
@@ -517,6 +529,7 @@ export function AppConfigModal() {
                         imageSizeMappings: normalizedConfig.imageSizeMappings,
                         customBodyParameters: normalizedConfig.customBodyParameters,
                         videoBillingConfiguration: normalizedConfig.videoBillingConfiguration,
+                        imageBillingConfiguration: normalizedConfig.imageBillingConfiguration,
                         displayName: normalizedConfig.displayName,
                         modelIcon: normalizedConfig.modelIcon,
                         isCustomModel: normalizedConfig.isCustomModel,
@@ -1588,6 +1601,27 @@ export function AppConfigModal() {
                                 </Form.Item>
                             </>
                         ) : null}
+                        {editingModelConfig.modelType === "image" ? (
+                            <div className="rounded-lg border border-[var(--studio-line)] bg-[var(--studio-surface-soft)] p-4">
+                                <div className="text-sm font-semibold">{translate("appShell.imageResolutionPricing")}</div>
+                                <div className="mt-1 text-xs leading-5 text-[var(--studio-muted)]">{translate("appShell.imageResolutionPricingHint")}</div>
+                                <div className="mt-3 grid grid-cols-3 gap-3">
+                                    {IMAGE_RESOLUTIONS.map((resolution) => (
+                                        <label key={resolution} className="block">
+                                            <span className="mb-1 block text-xs text-[var(--studio-muted)]">{resolution}</span>
+                                            <InputNumber
+                                                min={0}
+                                                precision={0}
+                                                className="w-full"
+                                                placeholder={translate("appShell.inheritModelUnitPrice")}
+                                                value={editingModelConfig.imageBillingConfiguration?.resolutionPrices?.[resolution]}
+                                                onChange={(value) => updateImageResolutionPrice(resolution, value === null ? null : Math.max(0, Math.floor(Number(value) || 0)))}
+                                            />
+                                        </label>
+                                    ))}
+                                </div>
+                            </div>
+                        ) : null}
                         <Form.Item label={translate("appShell.customJSON")} extra={translate("appShell.mergedOnlyIntoJSONPOSTBodiesDuplicateFieldsOverride")}>
                             <Input.TextArea value={editingCustomBodyParameters} autoSize={{ minRows: 5, maxRows: 12 }} spellCheck={false} onChange={(event) => setEditingCustomBodyParameters(event.target.value)} />
                         </Form.Item>
@@ -1614,6 +1648,9 @@ function cloneModelConfig(config: ServerModelConfig): ServerModelConfig {
         customModelConfig: cloneCustomModelConfig(config.customModelConfig),
         imageSizeMappings: config.modelType === "image" ? cloneImageSizeMappings(config.imageSizeMappings) : null,
         videoBillingConfiguration: config.modelType === "video" ? cloneVideoBillingConfiguration(config.videoBillingConfiguration || createVideoBillingConfiguration()) : null,
+        imageBillingConfiguration: config.modelType === "image" && config.imageBillingConfiguration
+            ? { resolutionPrices: { ...(config.imageBillingConfiguration.resolutionPrices || {}) } }
+            : null,
     };
 }
 
@@ -1640,11 +1677,21 @@ function normalizeModelConfigForSave(config: ServerModelConfig): ServerModelConf
         ...config,
         capabilities,
         videoBillingConfiguration,
+        imageBillingConfiguration: config.modelType === "image" ? normalizeImageBillingConfiguration(config.imageBillingConfiguration) : null,
         isCustomModel: config.isCustomModel && config.modelType !== "text",
         convertImageSizeToPixels: config.modelType === "image" && Boolean(config.convertImageSizeToPixels),
         imageSizeMappings: config.modelType === "image" ? normalizeImageSizeMappings(config.imageSizeMappings) : null,
         customModelConfig,
     };
+}
+
+/** 图片分辨率价目表只保留1K、2K、4K的已填写价格，全空表示沿用模型单价。 */
+function normalizeImageBillingConfiguration(configuration: ServerModelConfig["imageBillingConfiguration"]): ServerModelConfig["imageBillingConfiguration"] {
+    const prices = Object.fromEntries(
+        IMAGE_RESOLUTIONS.map((resolution) => [resolution, configuration?.resolutionPrices?.[resolution]])
+            .filter(([, price]) => typeof price === "number" && Number.isFinite(price)),
+    ) as Record<string, number>;
+    return Object.keys(prices).length ? { resolutionPrices: prices } : null;
 }
 
 function cloneObjectStorages(storages: ObjectStorageConfig[]) {
@@ -1669,6 +1716,7 @@ function createDraftModelConfig(channelId: string, modelName: string, modelType:
         imageSizeMappings: modelType === "image" ? cloneImageSizeMappings() : null,
         customBodyParameters: {},
         videoBillingConfiguration: modelType === "video" ? createVideoBillingConfiguration() : null,
+        imageBillingConfiguration: null,
         displayName: null,
         modelIcon: null,
         isCustomModel: false,
@@ -1697,7 +1745,8 @@ function sameModelConfigForUpdate(first: ServerModelConfig, second: ServerModelC
         sameValue(first.capabilities, second.capabilities) &&
         sameValue(first.customBodyParameters, second.customBodyParameters) &&
         sameValue(first.customModelConfig, second.customModelConfig) &&
-        sameValue(first.videoBillingConfiguration, second.videoBillingConfiguration)
+        sameValue(first.videoBillingConfiguration, second.videoBillingConfiguration) &&
+        sameValue(first.imageBillingConfiguration, second.imageBillingConfiguration)
     );
 }
 

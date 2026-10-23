@@ -44,9 +44,18 @@ export function readStoryboardModelCost(modelCosts: Array<{ model: string; taskT
     return modelCosts.find((item) => item.taskType === "text" && item.model === model)?.credits ?? 0;
 }
 
-/** 计算当前勾选资产的一次性图片生成预估积分。 */
-export function readStoryboardAssetImageCost(modelCosts: Array<{ model: string; taskType: string; credits: number }>, model: string, selectedCount: number): number {
-    const unitCost = modelCosts.find((item) => item.taskType === "image" && item.model === model)?.credits ?? 0;
+/** 计算当前勾选资产的一次性图片生成预估积分，配置了分辨率价目表时按所选清晰度取价。 */
+export function readStoryboardAssetImageCost(
+    modelCosts: Array<{ model: string; taskType: string; credits: number; resolutionPrices?: Partial<Record<string, number>> }>,
+    model: string,
+    selectedCount: number,
+    resolution?: string,
+): number {
+    const cost = modelCosts.find((item) => item.taskType === "image" && item.model === model);
+    const resolutionKey = resolution?.trim().toUpperCase();
+    const resolutionPrice = resolutionKey ? cost?.resolutionPrices?.[resolutionKey] : undefined;
+    // 非数字或空值回退模型单价，与服务端按 2K 缺省计费的规则保持一致。
+    const unitCost = typeof resolutionPrice === "number" && Number.isFinite(resolutionPrice) ? resolutionPrice : cost?.credits ?? 0;
     return Math.max(0, Math.floor(selectedCount)) * Math.max(0, unitCost);
 }
 

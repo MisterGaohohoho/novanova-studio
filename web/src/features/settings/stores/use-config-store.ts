@@ -12,6 +12,7 @@ import type { ObjectStorageConfig } from "@/shared/types/object-storage";
 
 import { normalizeChannelName } from "../lib/channel-name";
 import { cloneImageSizeMappings } from "@/features/generation/lib/image-size-mappings";
+import type { ImageResolution } from "@/features/generation/lib/image-size-mappings";
 import { refreshModelConfigurationSnapshot } from "../lib/model-configuration-refresh";
 
 export type ApiCallFormat = "openai" | "newapi" | "evolink" | "gemini" | "agnes" | "anthropic" | "seedance" | "minimax" | "custom";
@@ -23,6 +24,10 @@ export type VideoBillingConfiguration = {
     billingUnit: ModelCreditUnit;
     minimumDurationSeconds: number;
     modePrices: Partial<Record<VideoGenerationMode, Partial<Record<VideoResolution, number>>>>;
+};
+/** 图片模型按 1K、2K、4K 清晰度配置的积分单价，空表示沿用模型单价。 */
+export type ImageBillingConfiguration = {
+    resolutionPrices: Partial<Record<ImageResolution, number>>;
 };
 /** 自定义模型单能力/模式分组配置。 */
 export type CustomModelGroupConfig = {
@@ -96,7 +101,7 @@ export type AiConfig = {
     videoGenerationMode: VideoGenerationMode;
     systemPrompt: string;
     models: string[];
-    modelCosts: Array<{ model: string; taskType: ModelCapability; credits: number; unit: ModelCreditUnit }>;
+    modelCosts: Array<{ model: string; taskType: ModelCapability; credits: number; unit: ModelCreditUnit; resolutionPrices?: Partial<Record<ImageResolution, number>> }>;
     imageModels: string[];
     videoModels: string[];
     textModels: string[];
@@ -516,6 +521,7 @@ export function configFromModelConfigs(channels: ModelChannel[], modelConfigs: S
             taskType: item.modelType,
             credits: item.creditCost,
             unit: normalizeModelCreditUnit(item.creditUnit, item.modelType),
+            resolutionPrices: item.imageBillingConfiguration?.resolutionPrices,
         })),
     });
 }
@@ -553,6 +559,7 @@ function configFromServerModels(modelList: ServerAiModelList | null) {
             taskType: model.capability as ModelCapability,
             credits: model.creditCost,
             unit: normalizeModelCreditUnit(model.creditUnit, model.capability as ModelCapability),
+            resolutionPrices: model.imageBillingConfiguration?.resolutionPrices,
         })),
         modelCapabilities: models.map((model) => ({ model: model.value, capabilities: model.capabilities || [] })),
         videoModelBillingConfigurations: models
@@ -660,6 +667,9 @@ export function normalizeServerModelConfig(config: ServerModelConfig): ServerMod
         requestConcurrency: normalizeModelRequestConcurrency(config.requestConcurrency),
         convertImageSizeToPixels: config.modelType === "image" && Boolean(config.convertImageSizeToPixels),
         imageSizeMappings: config.modelType === "image" ? cloneImageSizeMappings(config.imageSizeMappings) : null,
+        imageBillingConfiguration: config.modelType === "image" && config.imageBillingConfiguration
+            ? { resolutionPrices: { ...(config.imageBillingConfiguration.resolutionPrices || {}) } }
+            : null,
     };
 }
 

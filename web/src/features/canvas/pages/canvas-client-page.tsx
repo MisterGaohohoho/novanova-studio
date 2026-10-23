@@ -2510,7 +2510,7 @@ function CanvasWorkspacePage() {
                 return;
             }
             const normalizedSettings: CanvasStoryboardAssetGenerationSettings = { ...settings, model: normalizedModel };
-            const totalCredits = readStoryboardAssetImageCost(effectiveConfig.modelCosts, normalizedModel, selectedAssets.length);
+            const totalCredits = readStoryboardAssetImageCost(effectiveConfig.modelCosts, normalizedModel, selectedAssets.length, normalizedSettings.imageResolution);
             if (typeof creditBalance === "number" && totalCredits > creditBalance) {
                 message.error(translate("canvas.insufficientCreditsAssetsNeedAvailable", { value0: selectedAssets.length, value1: totalCredits, value2: creditBalance }));
                 return;
