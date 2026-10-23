@@ -16,6 +16,7 @@ import com.novanovastudio.ai.AiHttpClient;
 import com.novanovastudio.config.NovanovaProperties;
 import com.novanovastudio.dto.PersistenceDtos;
 import com.novanovastudio.dto.VideoBillingConfiguration;
+import com.novanovastudio.dto.VideoGenerationConstraints;
 import com.novanovastudio.entity.PersistenceRecords;
 import com.novanovastudio.repository.AiTaskRepository;
 import com.novanovastudio.repository.PersistenceRepository;
@@ -646,6 +647,57 @@ class PersistenceServiceTest {
         Assertions.assertEquals("second", updated.creditUnit());
     }
 
+    /** 四种启用模式的限制在保存、修改和重新读取时完整保留。 */
+    @Test
+    void shouldRoundTripCustomVideoConstraints() {
+        PersistenceRecords.UserAiChannelRecord channel = new PersistenceRecords.UserAiChannelRecord();
+        channel.setModels("[\"video-model\"]");
+        when(repository.getPlatformAiChannel("channel-1")).thenReturn(Mono.just(channel));
+        when(repository.createPlatformAiModelConfig(org.mockito.ArgumentMatchers.any())).thenReturn(Mono.empty());
+        var groups = new java.util.LinkedHashMap<String, PersistenceDtos.CustomModelGroupConfig>();
+        var prices = new java.util.LinkedHashMap<String, java.util.Map<String, Integer>>();
+        for (String mode : List.of("text-to-video", "image-to-video", "reference-to-video", "first-last-frame-to-video")) {
+            int minimum = mode.equals("text-to-video") || mode.equals("reference-to-video") ? 0 : mode.equals("image-to-video") ? 1 : 2;
+            int maximum = mode.equals("text-to-video") ? 0 : mode.equals("first-last-frame-to-video") ? 2 : 4;
+            var constraints = new VideoGenerationConstraints(2, 10, minimum, maximum, List.of("16:9", "auto"),
+                    mode.equals("reference-to-video") ? 2 : null, mode.equals("reference-to-video") ? 0 : null);
+            groups.put(mode, new PersistenceDtos.CustomModelGroupConfig("/video", "POST", "video", "{}", null, null, "url",
+                    null, "POST", null, null, null, null, constraints));
+            prices.put(mode, java.util.Map.of("720p", 1));
+        }
+        JSONObject data = JSONObject.of("channelId", "channel-1", "modelName", "video-model", "modelType", "video",
+                "capabilities", List.copyOf(groups.keySet()), "isCustomModel", true, "customModelConfig", groups,
+                "creditCost", 0, "videoBillingConfiguration", new VideoBillingConfiguration("generation", 3, prices));
+        var created = service.createModelConfig(data.to(PersistenceDtos.CreateModelConfigRequest.class)).block();
+        Assertions.assertNotNull(created);
+        Assertions.assertEquals(groups, created.customModelConfig());
+        var captor = ArgumentCaptor.forClass(PersistenceRecords.UserAiModelConfigRecord.class);
+        verify(repository).createPlatformAiModelConfig(captor.capture());
+        var stored = captor.getValue();
+        when(repository.getPlatformAiModelConfig(created.id())).thenReturn(Mono.just(stored));
+        when(repository.updatePlatformAiModelConfig(stored)).thenReturn(Mono.just(1L));
+        JSONObject updateData = JSON.parseObject(JSON.toJSONString(data));
+        updateData.put("id", created.id());
+        updateData.getJSONObject("customModelConfig").getJSONObject("image-to-video").getJSONObject("videoGenerationConstraints").put("maximumDurationSeconds", 9);
+        var updated = service.updateModelConfig(updateData.to(PersistenceDtos.UpdateModelConfigRequest.class)).block();
+        Assertions.assertEquals(9, updated.customModelConfig().get("image-to-video").videoGenerationConstraints().maximumDurationSeconds());
+        when(repository.listPlatformAiModelConfigs()).thenReturn(Flux.just(stored));
+        Assertions.assertEquals(updated.customModelConfig(), service.listModelConfigs().block().getFirst().customModelConfig());
+    }
+
+    /** 启用了视频模式但缺少整组限制时，必须在写数据库之前拒绝。 */
+    @Test
+    void shouldRejectMissingEnabledVideoModeConstraints() {
+        PersistenceRecords.UserAiChannelRecord channel = new PersistenceRecords.UserAiChannelRecord();
+        channel.setModels("[\"video-model\"]");
+        when(repository.getPlatformAiChannel("channel-1")).thenReturn(Mono.just(channel));
+        JSONObject data = JSONObject.of("channelId", "channel-1", "modelName", "video-model", "modelType", "video",
+                "capabilities", List.of("text-to-video"), "isCustomModel", true, "creditCost", 0,
+                "videoBillingConfiguration", new VideoBillingConfiguration("generation", 3, java.util.Map.of("text-to-video", java.util.Map.of("720p", 1))));
+        Assertions.assertThrows(BusinessException.class, () -> service.createModelConfig(data.to(PersistenceDtos.CreateModelConfigRequest.class)).block());
+        verify(repository, org.mockito.Mockito.never()).createPlatformAiModelConfig(org.mockito.ArgumentMatchers.any());
+    }
+
     /** 音频输入能力应通过已有能力列表保存，且不能成为分档计费模式。 */
     @Test
     void shouldSaveAudioInputCapabilityWithoutBillingMode() {
@@ -780,14 +832,14 @@ class PersistenceServiceTest {
         when(repository.getPlatformAiChannel("channel-1")).thenReturn(Mono.just(channel));
         when(repository.createPlatformAiModelConfig(org.mockito.ArgumentMatchers.any())).thenReturn(Mono.empty());
         PersistenceDtos.ModelConfig defaultCreated = service.createModelConfig(new PersistenceDtos.CreateModelConfigRequest(
-                "channel-1", "image-model", "image", List.of(), 0, java.math.BigDecimal.ZERO, false, "high")).block();
+                "channel-1", "image-model", "image", List.of(), 0, 0, false, "high")).block();
         Assertions.assertFalse(defaultCreated.convertImageSizeToPixels());
         Assertions.assertEquals("2880x2880", defaultCreated.imageSizeMappings().get("1:1").get("4K"));
 
         java.util.Map<String, java.util.Map<String, String>> mappings = java.util.Map.of("1:1", java.util.Map.of("4K", "4096x4096"));
 
         PersistenceDtos.CreateModelConfigRequest request = new PersistenceDtos.CreateModelConfigRequest(
-                "channel-1", "image-model", "image", List.of(), 0, java.math.BigDecimal.ZERO, false, "high", "generation", 1,
+                "channel-1", "image-model", "image", List.of(), 0, 0, false, "high", "generation", 1,
                 new JSONObject(), null, null, null, false, null, true, mappings);
         PersistenceDtos.ModelConfig created = service.createModelConfig(JSON.parseObject(JSON.toJSONString(request), PersistenceDtos.CreateModelConfigRequest.class)).block();
         Assertions.assertTrue(created.convertImageSizeToPixels());
@@ -806,7 +858,7 @@ class PersistenceServiceTest {
         when(repository.getPlatformAiModelConfig(created.id())).thenReturn(Mono.just(enabled));
         when(repository.updatePlatformAiModelConfig(enabled)).thenReturn(Mono.just(1L));
         PersistenceDtos.ModelConfig updated = service.updateModelConfig(new PersistenceDtos.UpdateModelConfigRequest(
-                created.id(), "image", List.of(), 0, java.math.BigDecimal.ZERO, false, "high", "generation", 1,
+                created.id(), "image", List.of(), 0, 0, false, "high", "generation", 1,
                 new JSONObject(), null, null, null, false, null, false, mappings)).block();
         Assertions.assertFalse(updated.convertImageSizeToPixels());
         Assertions.assertEquals(mappings, updated.imageSizeMappings());
@@ -828,7 +880,7 @@ class PersistenceServiceTest {
         when(repository.createPlatformAiModelConfig(org.mockito.ArgumentMatchers.any())).thenReturn(Mono.empty());
 
         PersistenceDtos.ModelConfig created = service.createModelConfig(new PersistenceDtos.CreateModelConfigRequest(
-                "channel-1", "model", modelType, List.of(), 0, java.math.BigDecimal.ZERO, false, "high", "generation", 1,
+                "channel-1", "model", modelType, List.of(), 0, 0, false, "high", "generation", 1,
                 new JSONObject(), null, null, null, false, null, true, null)).block();
 
         Assertions.assertFalse(created.convertImageSizeToPixels());

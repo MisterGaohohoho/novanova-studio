@@ -18,6 +18,7 @@ import com.novanovastudio.ai.AiTaskParameterReader;
 import com.novanovastudio.ai.AiTaskSources;
 import com.novanovastudio.ai.AiTaskTypes;
 import com.novanovastudio.ai.VideoGenerationMode;
+import com.novanovastudio.ai.VideoGenerationConstraintSupport;
 import com.novanovastudio.ai.VideoResolution;
 import com.novanovastudio.agent.workflow.VideoWorkflowRegistry;
 import com.novanovastudio.agent.workflow.VideoWorkflowDefinition;
@@ -197,7 +198,8 @@ public class AiTaskService {
         if (stages.isEmpty()) {
             return Mono.just(unavailable(SystemMessage.of("business.unsupportedWorkflowQuoteStage").render(locale), request.workflowType()));
         }
-        return Flux.fromIterable(stages)
+        Mono<Void> constraintsCheck = "image".equals(request.stage()) ? validateVideoWorkflowConstraints(request) : Mono.empty();
+        return constraintsCheck.thenMany(Flux.fromIterable(stages))
                 .concatMap(stage -> quoteStage(request, stage)
                         .map(quote -> new StageQuoteAttempt(new AiTaskDtos.VideoWorkflowStageQuote(quote.role(), workflowStageLabel(quote.role(), quote.displayName(), locale), quote.taskType(), quote.model(), quote.taskCount(), quote.credits(), quote.videoGenerationMode()), null))
                         .onErrorResume(BusinessException.class, exception -> Mono.just(new StageQuoteAttempt(null, exception.getSystemMessage().render(locale)))))
@@ -228,7 +230,37 @@ public class AiTaskService {
                             .filter(StringUtils::hasText).forEach(capabilitySet::add);
                     return new AiTaskDtos.VideoWorkflowQuoteResponse(true, definition.workflowType(), succeeded,
                             total, "", List.copyOf(capabilitySet));
-                });
+                }).onErrorResume(BusinessException.class, exception -> Mono.just(unavailable(exception.getSystemMessage().render(locale), request.workflowType())));
+    }
+
+    /**
+     * 在工作流图片阶段启动前，按视频阶段预计生成的素材数量校验自定义模型限制。
+     * @param request VideoWorkflowQuoteRequest 包含视频比例和时长的工作流参数
+     * @return Mono<Void> 所有视频阶段限制均满足的完成信号
+     * @throws BusinessException 配置或预计输入不满足限制时抛出
+     */
+    public Mono<Void> validateVideoWorkflowConstraints(AiTaskDtos.VideoWorkflowQuoteRequest request) {
+        return Mono.defer(() -> {
+            var plan = videoWorkflowRegistry.require(request.workflowType()).buildQuotePlan(request)
+                    .orElseThrow(() -> new BusinessException(ErrorCode.BUSINESS_ERROR, SystemMessage.of("business.workflowHasNoQuoteDefinition", request.workflowType())));
+            return Flux.fromIterable(plan.stages()).filter(stage -> TYPE_VIDEO.equals(stage.taskType()))
+                    .concatMap(stage -> resolveModel(TYPE_VIDEO, request.model()).doOnNext(model -> {
+                        if (!model.isCustomModel()) return;
+                        BusinessException firstError = null;
+                        for (String mode : stage.videoGenerationModes()) {
+                            if (model.capabilities() == null || !model.capabilities().contains(mode)) continue;
+                            try {
+                                VideoGenerationConstraintSupport.validateInput(mode, model.customModelConfig() == null ? null : model.customModelConfig().get(mode), model.capabilities(),
+                                        model.videoBillingConfiguration(), request.size(), videoSeconds(stage.parameters()), stage.referenceRoles().size(), 0, 0);
+                                return;
+                            } catch (BusinessException exception) {
+                                if (firstError == null) firstError = exception;
+                            }
+                        }
+                        if (firstError != null) throw firstError;
+                        throw new BusinessException(ErrorCode.BUSINESS_ERROR, SystemMessage.of("business.videoModelLacksRequiredWorkflowCapabilities"));
+                    })).then();
+        });
     }
 
     /**
@@ -272,7 +304,8 @@ public class AiTaskService {
             List<AiTaskDtos.AiTaskMediaReference> references = stage.referenceRoles().stream()
                     .map(role -> new AiTaskDtos.AiTaskMediaReference(role, role, "image/png", role,
                             "https://placeholder.invalid/" + role, role)).toList();
-            Map<String, Object> parameters = stage.parameters();
+            Map<String, Object> parameters = new java.util.LinkedHashMap<>(stage.parameters());
+            if (TYPE_VIDEO.equals(taskType) && request.size() != null) parameters.put("size", request.size());
             List<String> candidateModes = modes.isEmpty() ? List.of("") : modes;
             BusinessException firstException = null;
             for (String candidateMode : candidateModes) {
@@ -329,6 +362,18 @@ public class AiTaskService {
     }
 
     /**
+     * 使用与真实任务一致的模型解析和计费规则计算单个任务积分，不创建任务也不扣费。
+     *
+     * @param request CreateAiTaskRequest 待报价的标准AI任务请求
+     * @return Mono<Integer> 单个任务的精确预计积分
+     */
+    public Mono<Integer> quoteTaskCredits(AiTaskDtos.CreateAiTaskRequest request) {
+        AiTaskDtos.CreateAiTaskRequest normalizedRequest = normalizeVideoGenerationMode(request);
+        return resolveModel(normalizedRequest.taskType(), normalizedRequest.model())
+                .map(model -> calculateTaskCredits(normalizedRequest, model));
+    }
+
+    /**
      * 创建AI生成任务，并在任务发布和入队前执行持久化处理。
      *
      * @param request CreateAiTaskRequest 创建任务请求
@@ -361,7 +406,7 @@ public class AiTaskService {
                 .flatMap(resolvedModel -> {
                     // 视频请求必须在提示词优化等副作用之前完成模式、素材和报价校验。
                     validateVideoTask(normalizedRequest, resolvedModel);
-                    return validateVideoReferences(userId, normalizedRequest);
+                    return validateVideoReferences(userId, normalizedRequest, resolvedModel);
                 })
                 : Mono.empty();
         // 校验视频请求后再解析风格，避免无效视频请求创建无关的优化任务。
@@ -614,7 +659,8 @@ public class AiTaskService {
                                     .map(channel -> new AiTaskDtos.AiModelOption(
                                             config.channelId() + CHANNEL_MODEL_SEPARATOR + config.modelName(),
                                             StringUtils.hasText(config.displayName()) ? config.displayName() : config.modelName(), config.modelType(), channel.name(), channel.apiFormat(), config.defaultModel(),
-                                            config.creditCost(), config.creditUnit(), config.capabilities(), config.videoBillingConfiguration(), config.modelIcon(), config.imageBillingConfiguration()))
+                                            config.creditCost(), config.creditUnit(), config.capabilities(), config.videoBillingConfiguration(), config.modelIcon(), config.imageBillingConfiguration(),
+                                            Boolean.TRUE.equals(config.isCustomModel()), VideoGenerationConstraintSupport.constraintsByMode(config.customModelConfig())))
                                     .orElse(null))
                             .filter(java.util.Objects::nonNull)
                             .toList();
@@ -665,7 +711,7 @@ public class AiTaskService {
                                                         // 任务排队期间模型配置可能被管理员修改，执行前重新校验模式和音频能力，避免绕过最新配置。
                                                         Mono<Void> executionPreflight = TYPE_VIDEO.equals(task.getTaskType())
                                                                 ? Mono.fromRunnable(() -> validateVideoTask(request, resolvedModel))
-                                                                        .then(validateVideoReferences(task.getUserId(), request))
+                                                                        .then(validateVideoReferences(task.getUserId(), request, resolvedModel))
                                                                 : Mono.empty();
                                                         return executionPreflight.then(Mono.defer(() -> {
                                                         // 自定义模型任务直接使用自定义适配器，不经过适配器注册表。
@@ -1149,13 +1195,20 @@ public class AiTaskService {
         List<AiTaskDtos.AiTaskMediaReference> imageReferences = request.references() == null ? List.of() : request.references();
         List<AiTaskDtos.AiTaskMediaReference> videoReferences = request.videoReferences() == null ? List.of() : request.videoReferences();
         List<AiTaskDtos.AiTaskMediaReference> audioReferences = request.audioReferences() == null ? List.of() : request.audioReferences();
+        if (resolvedModel.isCustomModel()) {
+            VideoGenerationConstraintSupport.validateInput(mode,
+                    resolvedModel.customModelConfig() == null ? null : resolvedModel.customModelConfig().get(mode),
+                    resolvedModel.capabilities(), resolvedModel.videoBillingConfiguration(),
+                    request.parameters() == null ? null : String.valueOf(request.parameters().getOrDefault("size", "")),
+                    videoSeconds(request.parameters()), imageReferences.size(), videoReferences.size(), audioReferences.size());
+        }
         if (!audioReferences.isEmpty()) {
             if (resolvedModel.capabilities() == null || !resolvedModel.capabilities().contains(AudioInputSupport.CAPABILITY)) throw new BusinessException(ErrorCode.PARAM_INVALID, SystemMessage.of("business.audioInputIsDisabledForThisModel"));
             AudioInputSupport.validateCapability(TYPE_VIDEO, resolvedModel.capabilities());
             if (!VideoGenerationMode.REFERENCE_TO_VIDEO.equals(mode)) throw new BusinessException(ErrorCode.PARAM_INVALID, SystemMessage.of("business.audioInputRequiresUniversalReferenceMode"));
-            if (audioReferences.size() > 3) throw new BusinessException(ErrorCode.PARAM_INVALID, SystemMessage.of("business.atMost3ReferenceAudioClips"));
+            if (!resolvedModel.isCustomModel() && audioReferences.size() > 3) throw new BusinessException(ErrorCode.PARAM_INVALID, SystemMessage.of("business.atMost3ReferenceAudioClips"));
             if (audioReferences.stream().anyMatch(reference -> reference == null || !AudioInputSupport.isAudioMimeType(reference.mimeType()))) throw new BusinessException(ErrorCode.PARAM_INVALID, SystemMessage.of("business.audioReferencesMustBeMP3OrWAV"));
-            if ("evolink".equals(resolvedModel.channel().apiFormat()) && imageReferences.isEmpty() && videoReferences.isEmpty()) throw new BusinessException(ErrorCode.PARAM_INVALID, SystemMessage.of("business.evolinkAudioReferencesAlsoRequireAnImageOrVideo"));
+            if (!resolvedModel.isCustomModel() && "evolink".equals(resolvedModel.channel().apiFormat()) && imageReferences.isEmpty() && videoReferences.isEmpty()) throw new BusinessException(ErrorCode.PARAM_INVALID, SystemMessage.of("business.evolinkAudioReferencesAlsoRequireAnImageOrVideo"));
         }
         if (imageReferences.stream().anyMatch(reference -> reference == null || !isImageMimeType(reference.mimeType()))) {
             throw new BusinessException(ErrorCode.PARAM_INVALID, SystemMessage.of("business.imageReferencesMustContainImagesOnly"));
@@ -1230,13 +1283,18 @@ public class AiTaskService {
      *
      * @param userId Long 当前用户ID
      * @param request CreateAiTaskRequest 视频任务请求
+     * @param resolvedModel ResolvedModel 已解析模型配置
      * @return Mono<Void> 校验结果
      */
-    private Mono<Void> validateVideoReferences(Long userId, AiTaskDtos.CreateAiTaskRequest request) {
+    private Mono<Void> validateVideoReferences(Long userId, AiTaskDtos.CreateAiTaskRequest request, ResolvedModel resolvedModel) {
+        int maximumAudioCount = 3;
+        if (resolvedModel.isCustomModel() && VideoGenerationMode.REFERENCE_TO_VIDEO.equals(request.videoGenerationMode())) {
+            maximumAudioCount = resolvedModel.customModelConfig().get(request.videoGenerationMode()).videoGenerationConstraints().maximumAudioCount();
+        }
         return Flux.concat(
                         validateVideoReferenceList(userId, request.references(), true),
                         validateVideoReferenceList(userId, request.videoReferences(), false),
-                        validateAudioReferences(userId, request.audioReferences()))
+                        validateAudioReferences(userId, request.audioReferences(), maximumAudioCount))
                 .then();
     }
 
@@ -1244,9 +1302,10 @@ public class AiTaskService {
      * 校验音频的用户归属、可访问地址和存储元数据。
      * @param userId Long 当前用户标识
      * @param references List 音频参考，必须来自媒体存储
+     * @param maximumCount int 当前模式音频上限
      * @return Mono<Void> 完成校验的异步信号
      */
-    private Mono<Void> validateAudioReferences(Long userId, List<AiTaskDtos.AiTaskMediaReference> references) {
+    private Mono<Void> validateAudioReferences(Long userId, List<AiTaskDtos.AiTaskMediaReference> references, int maximumCount) {
         return Flux.fromIterable(references == null ? List.<AiTaskDtos.AiTaskMediaReference>of() : references)
                 .concatMap(reference -> {
                     if (reference == null || !StringUtils.hasText(reference.storageKey())) return Mono.<PersistenceDtos.UploadedMediaResponse>error(new BusinessException(ErrorCode.PARAM_INVALID, SystemMessage.of("business.uploadAudioAndProvideItsStorageIDFirst")));
@@ -1256,7 +1315,7 @@ public class AiTaskService {
                                 if (!isHttpReferenceUrl(media.url())) throw new BusinessException(ErrorCode.PARAM_INVALID, SystemMessage.of("business.referenceAudioHasNoAccessibleURL"));
                                 return media;
                             });
-                }).collectList().doOnNext(media -> AudioInputSupport.validateMedia(media, references == null ? List.of() : references)).then();
+                }).collectList().doOnNext(media -> AudioInputSupport.validateMedia(media, references == null ? List.of() : references, maximumCount)).then();
     }
 
     /**
@@ -1443,12 +1502,7 @@ public class AiTaskService {
         try {
             int seconds;
             if (rawSeconds instanceof Number number) {
-                double numericSeconds = number.doubleValue();
-                if (!Double.isFinite(numericSeconds) || numericSeconds != Math.rint(numericSeconds)
-                        || numericSeconds > Integer.MAX_VALUE || numericSeconds < Integer.MIN_VALUE) {
-                    throw new NumberFormatException("视频时长必须是整数");
-                }
-                seconds = (int) numericSeconds;
+                seconds = new java.math.BigDecimal(number.toString()).intValueExact();
             } else {
                 seconds = Integer.parseInt(rawSeconds.toString().trim());
             }

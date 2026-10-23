@@ -65,6 +65,10 @@ import { ImageSizeMappingsEditor } from "./image-size-mappings-editor";
 import { ModelSelectModal, type ChannelModelGroup } from "./model-select-modal";
 import { ModelConfigCopyModal } from "./model-config-copy-modal";
 import { applyCustomConfigCopy } from "./model-config-copy";
+import type { CustomGroupField } from "./model-config-copy";
+import { ModelConfigAutoFillModal } from "./model-config-auto-fill-modal";
+import { VideoGenerationConstraintsEditor } from "./video-generation-constraints-editor";
+import { videoConstraintConfigurationIssues } from "@/features/generation/lib/video-generation-constraints";
 
 type ModelGroup = {
     capability: ModelCapability;
@@ -192,6 +196,7 @@ export function AppConfigModal() {
     const [editingCustomBodyParameters, setEditingCustomBodyParameters] = useState("{}");
     const [collapsedEditingCapabilities, setCollapsedEditingCapabilities] = useState<string[]>([]);
     const [modelConfigCopyTarget, setModelConfigCopyTarget] = useState<ServerModelConfig | null>(null);
+    const [autoFillConfigMode, setAutoFillConfigMode] = useState<VideoGenerationMode | null>(null);
     const initializedRef = useRef(false);
     const editingModelIsMedia = Boolean(editingModelConfig && (editingModelConfig.modelType === "image" || editingModelConfig.modelType === "video"));
 
@@ -419,6 +424,13 @@ export function AppConfigModal() {
         message.success(translate("appShell.copiedCustomConfig", { value0: copiedModes.length }));
     };
 
+    /** 用同一模型的其他模式补全当前模式的空字段，已有内容保持不变。 */
+    const autoFillCustomConfig = (nextConfig: ServerModelConfig, filledFields: CustomGroupField[]) => {
+        setEditingModelConfig(nextConfig);
+        setAutoFillConfigMode(null);
+        if (filledFields.length) message.success(translate("appShell.autoFilledFields", { value0: filledFields.length }));
+    };
+
     /** 图片分辨率价格留空表示该档位沿用模型单价。 */
     const updateImageResolutionPrice = (resolution: ImageResolution, value: number | null) => {
         setEditingModelConfig((configItem) => {
@@ -432,6 +444,17 @@ export function AppConfigModal() {
 
     const saveModelConfigEditor = () => {
         if (!editingModelConfig) return;
+        const issue = customVideoConfigurationIssue(editingModelConfig);
+        if (issue) {
+            setCollapsedEditingCapabilities((current) => current.filter((key) => key !== `video:${issue.mode}`));
+            message.error(issue.message);
+            requestAnimationFrame(() => {
+                const section = document.querySelector<HTMLElement>(`[data-video-constraints="${issue.mode}"]`);
+                section?.scrollIntoView({ block: "center", behavior: "smooth" });
+                section?.querySelector<HTMLElement>(`[id="${issue.mode}-${issue.field}"]`)?.focus();
+            });
+            return;
+        }
         let customBodyParameters: Record<string, unknown>;
         let imageSizeMappings: ImageSizeMappings | null;
         try {
@@ -490,6 +513,12 @@ export function AppConfigModal() {
     };
 
     const saveModelConfigs = async () => {
+        const invalid = draftModelConfigs.find((configuration) => customVideoConfigurationIssue(configuration));
+        if (invalid) {
+            openModelConfigEditor(invalid);
+            message.error(customVideoConfigurationIssue(invalid)!.message);
+            return;
+        }
         const baselineById = new Map(modelConfigBaseline.map((configItem) => [configItem.id, configItem]));
         // 未修改的旧失效配置不阻塞其他模型，新增、修改或设置默认时仍必须校验依赖。
         const blockingIssues = blockingModelConfigDependencyIssues(channelBaseline, draftModelConfigs, modelConfigBaseline, sameModelConfigForUpdate);
@@ -1366,7 +1395,14 @@ export function AppConfigModal() {
                             <div className="space-y-4">
                                 <div className="flex items-center justify-between gap-3 rounded-lg border border-[var(--studio-line)] p-4">
                                     <div><div className="font-medium">{translate("appShell.audioInputSupported")}</div><p className="text-xs text-[var(--studio-muted)]">{translate("appShell.allowAudioReferencesForThisVideoModelUniversalReference")}</p></div>
-                                    <Switch aria-label={translate("appShell.audioInputSupported")} checked={editingModelConfig.capabilities.includes("audio-input")} disabled={isSaving || !editingModelConfig.capabilities.includes("audio-input") && !editingModelConfig.capabilities.includes("reference-to-video")} onChange={(checked) => setEditingModelConfig({ ...editingModelConfig, capabilities: checked ? uniqueModels([...editingModelConfig.capabilities, "audio-input"]) : editingModelConfig.capabilities.filter((value) => value !== "audio-input") })} />
+                                    <Switch aria-label={translate("appShell.audioInputSupported")} checked={editingModelConfig.capabilities.includes("audio-input")} disabled={isSaving || !editingModelConfig.capabilities.includes("audio-input") && !editingModelConfig.capabilities.includes("reference-to-video")} onChange={(checked) => {
+                                        const group = editingModelConfig.customModelConfig?.["reference-to-video"];
+                                        setEditingModelConfig({
+                                            ...editingModelConfig,
+                                            capabilities: checked ? uniqueModels([...editingModelConfig.capabilities, "audio-input"]) : editingModelConfig.capabilities.filter((value) => value !== "audio-input"),
+                                            ...(editingModelConfig.isCustomModel && group ? { customModelConfig: { ...editingModelConfig.customModelConfig, "reference-to-video": { ...group, videoGenerationConstraints: { ...group.videoGenerationConstraints, maximumAudioCount: checked ? undefined : 0 } } } } : {}),
+                                        });
+                                    }} />
                                 </div>
                                 {createVideoGenerationCapabilityOptions(translate).map((mode, index) => {
                                     const prices = editingModelConfig.videoBillingConfiguration?.modePrices?.[mode.value] || {};
@@ -1445,11 +1481,25 @@ export function AppConfigModal() {
                                                     ))}
                                                 </div>
                                             </div>}
+                                            {modeCollapsed || !modeEnabled || !editingModelConfig.isCustomModel ? null : <div>
+                                                <div className="mt-3 flex items-center justify-between gap-3">
+                                                    <span className="text-sm font-semibold">{translate("appShell.videoConstraintSection")}</span>
+                                                    <AutoFillButton onClick={() => setAutoFillConfigMode(mode.value)} />
+                                                </div>
+                                                <VideoGenerationConstraintsEditor
+                                                    mode={mode.value}
+                                                    constraints={editingModelConfig.customModelConfig?.[mode.value]?.videoGenerationConstraints}
+                                                    audioEnabled={editingModelConfig.capabilities.includes("audio-input")}
+                                                    billingMinimum={editingModelConfig.videoBillingConfiguration?.minimumDurationSeconds || 1}
+                                                    onChange={(videoGenerationConstraints) => updateEditingModelConfig({ customModelConfig: { ...editingModelConfig.customModelConfig, [mode.value]: { ...emptyCustomModelGroup(), ...editingModelConfig.customModelConfig?.[mode.value], videoGenerationConstraints } } })}
+                                                />
+                                            </div>}
                                             {modeCollapsed ? null : editingModelConfig.isCustomModel ? (
                                                 <CustomModelGroupEditor
                                                     label={mode.label}
                                                     group={editingModelConfig.customModelConfig?.[mode.value]}
                                                     isVideo
+                                                    onAutoFill={() => setAutoFillConfigMode(mode.value)}
                                                     onChange={(group) =>
                                                         updateEditingModelConfig({
                                                             customModelConfig: { ...(editingModelConfig.customModelConfig || {}), [mode.value]: group },
@@ -1663,6 +1713,14 @@ export function AppConfigModal() {
                     onCopy={copyCustomConfigFromModel}
                 />
             ) : null}
+            {autoFillConfigMode && editingModelConfig ? (
+                <ModelConfigAutoFillModal
+                    config={editingModelConfig}
+                    mode={autoFillConfigMode}
+                    onCancel={() => setAutoFillConfigMode(null)}
+                    onFill={autoFillCustomConfig}
+                />
+            ) : null}
         </Modal>
     );
 }
@@ -1690,7 +1748,19 @@ function cloneModelConfig(config: ServerModelConfig): ServerModelConfig {
 }
 
 function cloneCustomModelConfig(config: ServerModelConfig["customModelConfig"] | null | undefined): ServerModelConfig["customModelConfig"] {
-    return Object.fromEntries(Object.entries(config || {}).map(([key, group]) => [key, { ...group }]));
+    return structuredClone(config || {});
+}
+
+/** 校验全部启用的自定义视频模式，保留模式与字段便于定位。 */
+function customVideoConfigurationIssue(config: ServerModelConfig) {
+    if (!config.isCustomModel || config.modelType !== "video") return null;
+    for (const { value: mode } of VIDEO_GENERATION_CAPABILITY_OPTIONS) {
+        if (!config.capabilities.includes(mode)) continue;
+        const issue = videoConstraintConfigurationIssues(mode, config.customModelConfig?.[mode]?.videoGenerationConstraints,
+            config.capabilities.includes("audio-input"), config.videoBillingConfiguration?.minimumDurationSeconds || 1)[0];
+        if (issue) return { mode, ...issue };
+    }
+    return null;
 }
 
 /**
@@ -1899,7 +1969,7 @@ function emptyCustomModelGroup(): CustomModelGroupConfig {
         responseExample: "",
         resultPath: "",
         queryPath: "",
-        queryMethod: "POST",
+        queryMethod: "GET",
         queryRequestTemplate: "",
         aiQueryPrompt: "",
         queryResponseExample: "",
@@ -1926,16 +1996,34 @@ const customTemplatePlaceholderOptions = [
     { label: "{{taskId}}", value: "{{taskId}}" },
 ];
 
+/** 查询方法默认 GET，选项顺序与默认值保持一致。 */
+const customQueryMethodOptions = [
+    { value: "GET", label: "GET" },
+    { value: "POST", label: "POST" },
+];
+
+/** 用同一模型的其他模式补全当前模式的空字段。 */
+function AutoFillButton({ onClick }: { onClick: () => void }) {
+    const translate = useTranslation();
+    return (
+        <Button size="small" icon={<Sparkles className="size-3.5" />} onClick={onClick}>
+            {translate("appShell.autoFill")}
+        </Button>
+    );
+}
+
 /** 自定义模型单个能力/模式分组的调用配置编辑器。 */
 function CustomModelGroupEditor({
     label,
     group,
     isVideo,
+    onAutoFill,
     onChange,
 }: {
     label: string;
     group: CustomModelGroupConfig | undefined;
     isVideo: boolean;
+    onAutoFill?: () => void;
     onChange: (group: CustomModelGroupConfig) => void;
 }) {
     const translate = useTranslation();
@@ -1959,7 +2047,10 @@ function CustomModelGroupEditor({
     };
     return (
         <div className="mt-3 space-y-3 rounded-md border border-[var(--studio-line)] bg-[var(--studio-panel)] p-3">
-            <div className="text-xs font-semibold text-[var(--studio-muted)]">{translate("appShell.customAPIConfiguration")}{label}）</div>
+            <div className="flex flex-wrap items-center justify-between gap-2">
+                <div className="text-xs font-semibold text-[var(--studio-muted)]">{translate("appShell.customAPIConfiguration")}{label}）</div>
+                {onAutoFill ? <AutoFillButton onClick={onAutoFill} /> : null}
+            </div>
             <div className="grid gap-3 md:grid-cols-[minmax(0,1fr)_112px]">
                 <div>
                     <div className="mb-1 text-xs text-[var(--studio-muted)]">{translate("appShell.requestPath")}</div>
@@ -2035,7 +2126,7 @@ function CustomModelGroupEditor({
                         </div>
                         <div>
                             <div className="mb-1 text-xs text-[var(--studio-muted)]">{translate("appShell.queryMethod")}</div>
-                            <Select value={current.queryMethod} options={customRequestMethodOptions} className="w-full" onChange={(value: "GET" | "POST") => update({ queryMethod: value })} />
+                            <Select value={current.queryMethod} options={customQueryMethodOptions} className="w-full" onChange={(value: "GET" | "POST") => update({ queryMethod: value })} />
                         </div>
                     </div>
                     {queryIsPost ? (
