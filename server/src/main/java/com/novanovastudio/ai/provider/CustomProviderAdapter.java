@@ -336,11 +336,12 @@ public class CustomProviderAdapter implements AiProviderAdapter {
                                                 List<String> videoReferenceUrls, List<String> audioReferenceUrls, String taskId) {
         String requestTemplate = taskId == null ? group.requestTemplate() : group.queryRequestTemplate();
         String prompt = "你是AI请求体构造助手。请严格按用户要求构造JSON请求体对象。\n\n"
-                + "用户构造要求：\n" + userPrompt + "\n\n"
+                + "用户构造要求：\n" + renderPromptPlaceholders(userPrompt, group) + "\n\n"
                 + (StringUtils.hasText(requestTemplate) ? "请求示例（用于参考接口字段与结构）：\n" + requestTemplate + "\n\n" : "")
                 + "本次请求信息：\n" + describeRequestParameters(context, group, referenceUrls, videoReferenceUrls, audioReferenceUrls, taskId) + "\n\n"
                 + "本次提供的参考图片、参考视频和参考音频必须全部按原始URL填入接口对应的素材字段，不能遗漏或只写进prompt。"
                 + "只使用用户配置明确支持的字段，不得编造字段，也不得将参考视频当作参考音频。\n"
+                + "【重要】请求模型名称必须原样使用「请求模型名称」给出的值，不得改写、缩写或推测变体。\n"
                 + "只返回请求体JSON对象，不要返回解释、Markdown代码块或任何其他内容。";
         AtomicReference<String> agentOutput = new AtomicReference<>();
         AtomicReference<String> constructionError = new AtomicReference<>();
@@ -364,6 +365,8 @@ public class CustomProviderAdapter implements AiProviderAdapter {
                             log.info("AI构造请求体响应: taskId={}, purpose={}, output={}", context.task().getId(), purpose, abbreviate(text));
                         })
                         .map(CustomProviderAdapter::extractFirstJsonObject)
+                        // AI可能改写服务端权威字段（如把模型名写成近似的错误标识），统一回填为真实值
+                        .map(body -> applyAuthoritativePlaceholders(body, context, group))
                         .map(body -> requireReferenceUrls(body, referenceUrls, videoReferenceUrls, audioReferenceUrls));
                 })
                 // 将校验失败原因反馈给AI，重试后仍不完整时禁止提交上游任务。
@@ -434,6 +437,66 @@ public class CustomProviderAdapter implements AiProviderAdapter {
         private MissingReferenceException(String message) {
             super(ErrorCode.PARAM_INVALID, message);
         }
+    }
+
+    /**
+     * 将用户构造提示词中的占位符替换为服务端确定的值。
+     * <p>
+     * 提示词里的占位符（如示例JSON中的{@code "model": "{{model}}"}}）原本要求模型自行翻译成实际值，
+     * 但模型可能改写这类标识（例如把 seedance-2.0-fast-text-to-video 写成 seedance-2.0-fast-to-video），
+     * 造成第三方接口拒绝请求。这里在提示词层面先替换为真实值，模型只需原样照抄。
+     * 提示词为自然语言与内嵌JSON混排，占位符值按JSON字符串转义后替换，保证内嵌JSON仍然合法。
+     *
+     * @param userPrompt 用户配置的AI构造提示词
+     * @param group      PersistenceDtos.CustomModelGroupConfig 当前能力或模式配置
+     * @return String 替换后的提示词
+     */
+    private static String renderPromptPlaceholders(String userPrompt, PersistenceDtos.CustomModelGroupConfig group) {
+        if (!StringUtils.hasText(userPrompt)) {
+            return userPrompt;
+        }
+        String requestModelName = group.requestModelName();
+        if (!StringUtils.hasText(requestModelName)) {
+            return userPrompt;
+        }
+        return userPrompt.replace("{{model}}", escapeJsonString(requestModelName));
+    }
+
+    /**
+     * 回填AI构造结果中由服务端掌握的权威字段。
+     * <p>
+     * AI构造请求体时，{@code {{model}}}、{@code {{prompt}}}等占位符只以文本形式出现在提示词里，
+     * 需由模型自行翻译成实际值。模型可能改写这些值（如把模型名写成近似的错误标识），
+     * 导致第三方接口拒绝请求。因此这里对已存在的字段强制回填为服务端确定的值：
+     * 模型名取配置的请求模型名称，提示词取用户原始提示词。字段不存在时不新增，
+     * 避免引入用户未要求的额外字段。
+     *
+     * @param body    AI构造出的请求体
+     * @param context AI任务执行上下文
+     * @param group   PersistenceDtos.CustomModelGroupConfig 当前能力或模式配置
+     * @return JSONObject 回填后的请求体
+     */
+    private static JSONObject applyAuthoritativePlaceholders(JSONObject body, AiTaskExecutionContext context,
+                                                            PersistenceDtos.CustomModelGroupConfig group) {
+        if (body == null) {
+            return body;
+        }
+        String requestModelName = group.requestModelName();
+        if (StringUtils.hasText(requestModelName) && body.containsKey("model")) {
+            String current = body.getString("model");
+            if (!requestModelName.equals(current)) {
+                body.put("model", requestModelName);
+            }
+        }
+        // 提示词原样透传：用户写的内容不应被模型改写或截断
+        String prompt = context.request().prompt();
+        if (StringUtils.hasText(prompt) && body.containsKey("prompt")) {
+            String current = body.getString("prompt");
+            if (!prompt.equals(current)) {
+                body.put("prompt", prompt);
+            }
+        }
+        return body;
     }
 
     /**

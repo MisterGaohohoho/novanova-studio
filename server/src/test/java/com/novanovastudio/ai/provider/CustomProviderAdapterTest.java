@@ -348,6 +348,96 @@ class CustomProviderAdapterTest {
     }
 
     /**
+     * AI把模型名改写成近似标识时，服务端应回填为配置的请求模型名称。
+     *
+     * @return void 无返回值
+     */
+    @Test
+    void shouldRestoreModelNameRewrittenByAgent() {
+        givenAgentOutputs("{\"model\":\"seedance-2.0-fast-to-video\",\"prompt\":\"用户提示词\"}");
+
+        StepVerifier.create(adapter.execute(agentContext("seedance-2.0-fast-text-to-video", "{\"model\":\"{{model}}\",\"prompt\":\"{{prompt}}\"}")))
+                .expectErrorMessage("测试已捕获请求").verify(Duration.ofSeconds(5));
+
+        Assertions.assertEquals("seedance-2.0-fast-text-to-video", submittedBody().getString("model"));
+    }
+
+    /**
+     * AI改写用户提示词时，服务端应回填为用户原始提示词。
+     *
+     * @return void 无返回值
+     */
+    @Test
+    void shouldRestorePromptRewrittenByAgent() {
+        givenAgentOutputs("{\"model\":\"seedance-2.0-fast-text-to-video\",\"prompt\":\"被改写的提示词\"}");
+
+        StepVerifier.create(adapter.execute(agentContext("seedance-2.0-fast-text-to-video", "{\"model\":\"{{model}}\",\"prompt\":\"{{prompt}}\"}")))
+                .expectErrorMessage("测试已捕获请求").verify(Duration.ofSeconds(5));
+
+        Assertions.assertEquals("真实电影感，清晨窗光下的木质桌面", submittedBody().getString("prompt"));
+    }
+
+    /**
+     * AI输出没有模型字段时不应擅自新增，避免引入用户未要求的字段。
+     *
+     * @return void 无返回值
+     */
+    @Test
+    void shouldNotAddModelFieldWhenAgentOmitsIt() {
+        givenAgentOutputs("{\"duration\":5}");
+
+        StepVerifier.create(adapter.execute(agentContext("seedance-2.0-fast-text-to-video", "{\"duration\":5}")))
+                .expectErrorMessage("测试已捕获请求").verify(Duration.ofSeconds(5));
+
+        Assertions.assertFalse(submittedBody().containsKey("model"));
+    }
+
+    /**
+     * 构造提示词里的模型占位符应替换为真实模型名，让模型直接照抄而无需翻译。
+     *
+     * @return void 无返回值
+     */
+    @Test
+    void shouldRenderModelPlaceholderInAgentPrompt() {
+        ChatResponse response = mock(ChatResponse.class);
+        TextBlock text = mock(TextBlock.class);
+        when(text.getText()).thenReturn("{\"model\":\"seedance-2.0-fast-text-to-video\"}");
+        when(response.getContent()).thenReturn(List.of(text));
+        when(model.stream(anyList(), anyList(), any(GenerateOptions.class))).thenAnswer(invocation -> {
+            List<io.agentscope.core.message.Msg> messages = invocation.getArgument(0);
+            String prompt = messages.getFirst().getTextContent();
+            Assertions.assertTrue(prompt.contains("\"model\": \"seedance-2.0-fast-text-to-video\""));
+            Assertions.assertFalse(prompt.contains("{{model}}"));
+            return Flux.just(response);
+        });
+
+        StepVerifier.create(adapter.execute(agentContext("seedance-2.0-fast-text-to-video", "{\"model\": \"{{model}}\"}")))
+                .expectErrorMessage("测试已捕获请求").verify(Duration.ofSeconds(5));
+    }
+
+    /**
+     * 构造用于AI构造请求体验证的视频任务上下文。
+     *
+     * @param requestModelName String 配置的请求模型名称
+     * @param requestTemplate String 请求示例模板
+     * @return AiTaskExecutionContext 自定义模型视频任务上下文
+     */
+    private AiTaskExecutionContext agentContext(String requestModelName, String requestTemplate) {
+        AiGenerationTask task = new AiGenerationTask();
+        task.setId("custom-agent-task");
+        task.setUserId(1L);
+        task.setTaskType("video");
+        AiTaskDtos.CreateAiTaskRequest request = new AiTaskDtos.CreateAiTaskRequest("video", "真实电影感，清晨窗光下的木质桌面", requestModelName,
+                Map.of("resolution", "480p", "seconds", "5"), List.of(), List.of(), "videoPage", null, null, "text-to-video", null);
+        PersistenceDtos.CustomModelGroupConfig group = new PersistenceDtos.CustomModelGroupConfig("/generate", "POST",
+                requestModelName, requestTemplate, "model固定不变：{\"model\": \"{{model}}\"}", "{}", "data.url", "", "GET", "", "", "", "");
+        return new AiTaskExecutionContext(task,
+                new AiTaskDtos.AiChannelConfig("custom-channel", "自定义渠道", "https://provider.example", "test-key", "custom", List.of(requestModelName)),
+                requestModelName, false, "", new JSONObject(), request, () -> Mono.just(false), progress -> Mono.empty(),
+                delta -> Mono.empty(), true, Map.of("text-to-video", group), false, null);
+    }
+
+    /**
      * 配置模型流式响应，多个输出依次用于重试，最后一个输出可持续返回。
      *
      * @param outputs String[] AI构造的JSON文本
