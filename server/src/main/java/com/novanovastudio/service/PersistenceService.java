@@ -9,6 +9,7 @@ import com.novanovastudio.ai.AudioInputSupport;
 import com.alibaba.fastjson2.TypeReference;
 import com.novanovastudio.ai.AudioMediaProbe;
 import com.novanovastudio.ai.AiHttpClient;
+import com.novanovastudio.ai.AiImageSizeSupport;
 import com.novanovastudio.ai.VideoGenerationMode;
 import com.novanovastudio.ai.VideoResolution;
 import com.novanovastudio.agent.AgentActivityService;
@@ -212,6 +213,9 @@ public class PersistenceService {
                     record.setThinkingEnabled(thinkingEnabled(request.thinkingEnabled()));
                     record.setReasoningEffort(reasoningEffort(request.reasoningEffort()));
                     record.setRequestConcurrency(normalizeRequestConcurrency(request.requestConcurrency()));
+                    record.setConvertImageSizeToPixels("image".equals(request.modelType()) && Boolean.TRUE.equals(request.convertImageSizeToPixels()));
+                    record.setImageSizeMappings("image".equals(request.modelType())
+                            ? JSON.toJSONString(AiImageSizeSupport.normalizeMappings(request.imageSizeMappings())) : null);
                     JSONObject customBodyParameters = request.customBodyParameters() == null
                             ? normalizeCustomBodyParameters(record.getCustomBodyParameters())
                             : normalizeCustomBodyParameters(request.customBodyParameters());
@@ -261,6 +265,9 @@ public class PersistenceService {
                     record.setReasoningEffort(reasoningEffort(request.reasoningEffort()));
                     record.setRequestConcurrency(normalizeRequestConcurrency(
                             request.requestConcurrency() == null ? record.getRequestConcurrency() : request.requestConcurrency()));
+                    record.setConvertImageSizeToPixels("image".equals(request.modelType()) && Boolean.TRUE.equals(request.convertImageSizeToPixels()));
+                    record.setImageSizeMappings("image".equals(request.modelType())
+                            ? JSON.toJSONString(AiImageSizeSupport.normalizeMappings(request.imageSizeMappings())) : null);
                     JSONObject customBodyParameters = request.customBodyParameters() == null
                             ? normalizeCustomBodyParameters(record.getCustomBodyParameters())
                             : normalizeCustomBodyParameters(request.customBodyParameters());
@@ -330,7 +337,11 @@ public class PersistenceService {
                 record.getDisplayName(),
                 record.getModelIcon(),
                 Boolean.TRUE.equals(record.getIsCustomModel()),
-                parseCustomModelConfig(record.getCustomModelConfig()));
+                parseCustomModelConfig(record.getCustomModelConfig()),
+                "image".equals(record.getModelType()) && Boolean.TRUE.equals(record.getConvertImageSizeToPixels()),
+                "image".equals(record.getModelType()) ? AiImageSizeSupport.normalizeMappings(
+                        record.getImageSizeMappings() == null ? null : JSON.parseObject(record.getImageSizeMappings(),
+                                new TypeReference<Map<String, Map<String, String>>>() {})) : null);
     }
 
     /**

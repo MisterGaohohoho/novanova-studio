@@ -68,19 +68,25 @@ public final class PersistenceDtos {
                                          String queryResultPath) {
     }
 
-    /** 用户模型配置。 */
+    /**
+     * 用户模型配置。
+     *
+     * @param convertImageSizeToPixels Boolean 图片size是否按分辨率转换为像素尺寸，默认关闭
+     * @param imageSizeMappings Map<String, Map<String, String>> 图片比例与档位的像素映射，null使用系统默认表
+     */
     public record ModelConfig(String id, String channelId, String modelName, String modelType,
                               List<String> capabilities, Boolean defaultModel, Integer sortOrder, Integer creditCost,
                               Boolean thinkingEnabled, String reasoningEffort, String creditUnit, Integer requestConcurrency,
                               JSONObject customBodyParameters, VideoBillingConfiguration videoBillingConfiguration, String displayName,
-                              String modelIcon, Boolean isCustomModel, Map<String, CustomModelGroupConfig> customModelConfig) {
+                              String modelIcon, Boolean isCustomModel, Map<String, CustomModelGroupConfig> customModelConfig,
+                              Boolean convertImageSizeToPixels, Map<String, Map<String, String>> imageSizeMappings) {
         /** 保持旧调用方使用空视频分档计费配置。 */
         public ModelConfig(String id, String channelId, String modelName, String modelType,
                            List<String> capabilities, Boolean defaultModel, Integer sortOrder, Integer creditCost,
                            Boolean thinkingEnabled, String reasoningEffort, String creditUnit, Integer requestConcurrency,
                            JSONObject customBodyParameters) {
             this(id, channelId, modelName, modelType, capabilities, defaultModel, sortOrder, creditCost,
-                    thinkingEnabled, reasoningEffort, creditUnit, requestConcurrency, customBodyParameters, null, null, null, false, null);
+                    thinkingEnabled, reasoningEffort, creditUnit, requestConcurrency, customBodyParameters, null, null, null, false, null, false, null);
         }
 
         /** 保持旧调用方使用空自定义请求体参数。 */
@@ -88,7 +94,7 @@ public final class PersistenceDtos {
                            List<String> capabilities, Boolean defaultModel, Integer sortOrder, Integer creditCost,
                            Boolean thinkingEnabled, String reasoningEffort, String creditUnit, Integer requestConcurrency) {
             this(id, channelId, modelName, modelType, capabilities, defaultModel, sortOrder, creditCost,
-                    thinkingEnabled, reasoningEffort, creditUnit, requestConcurrency, new JSONObject(), null, null, null, false, null);
+                    thinkingEnabled, reasoningEffort, creditUnit, requestConcurrency, new JSONObject(), null, null, null, false, null, false, null);
         }
 
         /** 保持旧调用方使用默认并发数。 */
@@ -96,7 +102,7 @@ public final class PersistenceDtos {
                            List<String> capabilities, Boolean defaultModel, Integer sortOrder, Integer creditCost,
                            Boolean thinkingEnabled, String reasoningEffort, String creditUnit) {
             this(id, channelId, modelName, modelType, capabilities, defaultModel, sortOrder, creditCost,
-                    thinkingEnabled, reasoningEffort, creditUnit, 1, new JSONObject(), null, null, null, false, null);
+                    thinkingEnabled, reasoningEffort, creditUnit, 1, new JSONObject(), null, null, null, false, null, false, null);
         }
 
         /** 保持旧调用方按次计费。 */
@@ -104,7 +110,7 @@ public final class PersistenceDtos {
                            List<String> capabilities, Boolean defaultModel, Integer sortOrder, Integer creditCost,
                            Boolean thinkingEnabled, String reasoningEffort) {
             this(id, channelId, modelName, modelType, capabilities, defaultModel, sortOrder, creditCost,
-                    thinkingEnabled, reasoningEffort, "generation", 1, new JSONObject(), null, null, null, false, null);
+                    thinkingEnabled, reasoningEffort, "generation", 1, new JSONObject(), null, null, null, false, null, false, null);
         }
     }
 
@@ -112,7 +118,12 @@ public final class PersistenceDtos {
     public record ModelConfigListResponse(List<ModelConfig> modelConfigs) {
     }
 
-    /** 创建用户模型配置请求。 */
+    /**
+     * 创建用户模型配置请求。
+     *
+     * @param convertImageSizeToPixels Boolean 图片size是否按分辨率转换为像素尺寸，默认关闭
+     * @param imageSizeMappings Map<String, Map<String, String>> 图片比例与档位的像素映射，null使用系统默认表
+     */
     public record CreateModelConfigRequest(@NotBlank(message = "business.channelIDIsRequired") String channelId,
                                            @NotBlank(message = "business.modelNameIsRequired") String modelName,
                                            @NotBlank(message = "business.modelTypeIsRequired") String modelType,
@@ -127,13 +138,14 @@ public final class PersistenceDtos {
                                            String displayName,
                                            String modelIcon,
                                            Boolean isCustomModel,
-                                           Map<String, CustomModelGroupConfig> customModelConfig) {
+                                           Map<String, CustomModelGroupConfig> customModelConfig,
+                                           Boolean convertImageSizeToPixels, Map<String, Map<String, String>> imageSizeMappings) {
         /** 保持旧调用方使用空视频分档计费配置。 */
         public CreateModelConfigRequest(String channelId, String modelName, String modelType, List<String> capabilities,
                                         Integer sortOrder, Integer creditCost, Boolean thinkingEnabled, String reasoningEffort,
                                         String creditUnit, Integer requestConcurrency, JSONObject customBodyParameters) {
             this(channelId, modelName, modelType, capabilities, sortOrder, creditCost, thinkingEnabled, reasoningEffort,
-                    creditUnit, requestConcurrency, customBodyParameters, null, null, null, false, null);
+                    creditUnit, requestConcurrency, customBodyParameters, null, null, null, false, null, false, null);
         }
 
         /** 保持旧调用方使用空自定义请求体参数。 */
@@ -141,7 +153,7 @@ public final class PersistenceDtos {
                                         Integer sortOrder, Integer creditCost, Boolean thinkingEnabled, String reasoningEffort,
                                         String creditUnit, Integer requestConcurrency) {
             this(channelId, modelName, modelType, capabilities, sortOrder, creditCost, thinkingEnabled, reasoningEffort,
-                    creditUnit, requestConcurrency, new JSONObject(), null, null, null, false, null);
+                    creditUnit, requestConcurrency, new JSONObject(), null, null, null, false, null, false, null);
         }
 
         /** 保持旧调用方使用默认并发数。 */
@@ -149,18 +161,23 @@ public final class PersistenceDtos {
                                         Integer sortOrder, Integer creditCost, Boolean thinkingEnabled, String reasoningEffort,
                                         String creditUnit) {
             this(channelId, modelName, modelType, capabilities, sortOrder, creditCost, thinkingEnabled, reasoningEffort,
-                    creditUnit, 1, new JSONObject(), null, null, null, false, null);
+                    creditUnit, 1, new JSONObject(), null, null, null, false, null, false, null);
         }
 
         /** 保持旧调用方按次计费。 */
         public CreateModelConfigRequest(String channelId, String modelName, String modelType, List<String> capabilities,
                                         Integer sortOrder, Integer creditCost, Boolean thinkingEnabled, String reasoningEffort) {
             this(channelId, modelName, modelType, capabilities, sortOrder, creditCost, thinkingEnabled, reasoningEffort,
-                    "generation", 1, new JSONObject(), null, null, null, false, null);
+                    "generation", 1, new JSONObject(), null, null, null, false, null, false, null);
         }
     }
 
-    /** 修改用户模型配置请求。 */
+    /**
+     * 修改用户模型配置请求。
+     *
+     * @param convertImageSizeToPixels Boolean 图片size是否按分辨率转换为像素尺寸，默认关闭
+     * @param imageSizeMappings Map<String, Map<String, String>> 图片比例与档位的像素映射，null使用系统默认表
+     */
     public record UpdateModelConfigRequest(@NotBlank(message = "business.modelConfigurationIDIsRequired") String id,
                                            @NotBlank(message = "business.modelTypeIsRequired") String modelType,
                                            List<String> capabilities, Integer sortOrder,
@@ -174,13 +191,14 @@ public final class PersistenceDtos {
                                            String displayName,
                                            String modelIcon,
                                            Boolean isCustomModel,
-                                           Map<String, CustomModelGroupConfig> customModelConfig) {
+                                           Map<String, CustomModelGroupConfig> customModelConfig,
+                                           Boolean convertImageSizeToPixels, Map<String, Map<String, String>> imageSizeMappings) {
         /** 保持旧调用方使用空视频分档计费配置。 */
         public UpdateModelConfigRequest(String id, String modelType, List<String> capabilities, Integer sortOrder,
                                         Integer creditCost, Boolean thinkingEnabled, String reasoningEffort, String creditUnit,
                                         Integer requestConcurrency, JSONObject customBodyParameters) {
             this(id, modelType, capabilities, sortOrder, creditCost, thinkingEnabled, reasoningEffort, creditUnit,
-                    requestConcurrency, customBodyParameters, null, null, null, false, null);
+                    requestConcurrency, customBodyParameters, null, null, null, false, null, false, null);
         }
 
         /** 保持旧调用方使用空自定义请求体参数。 */
@@ -188,21 +206,21 @@ public final class PersistenceDtos {
                                         Integer creditCost, Boolean thinkingEnabled, String reasoningEffort, String creditUnit,
                                         Integer requestConcurrency) {
             this(id, modelType, capabilities, sortOrder, creditCost, thinkingEnabled, reasoningEffort, creditUnit,
-                    requestConcurrency, new JSONObject(), null, null, null, false, null);
+                    requestConcurrency, new JSONObject(), null, null, null, false, null, false, null);
         }
 
         /** 保持旧调用方省略并发数时沿用原配置。 */
         public UpdateModelConfigRequest(String id, String modelType, List<String> capabilities, Integer sortOrder,
                                         Integer creditCost, Boolean thinkingEnabled, String reasoningEffort, String creditUnit) {
             this(id, modelType, capabilities, sortOrder, creditCost, thinkingEnabled, reasoningEffort, creditUnit,
-                    null, new JSONObject(), null, null, null, false, null);
+                    null, new JSONObject(), null, null, null, false, null, false, null);
         }
 
         /** 保持旧调用方按次计费。 */
         public UpdateModelConfigRequest(String id, String modelType, List<String> capabilities, Integer sortOrder,
                                         Integer creditCost, Boolean thinkingEnabled, String reasoningEffort) {
             this(id, modelType, capabilities, sortOrder, creditCost, thinkingEnabled, reasoningEffort,
-                    "generation", null, new JSONObject(), null, null, null, false, null);
+                    "generation", null, new JSONObject(), null, null, null, false, null, false, null);
         }
     }
 
