@@ -504,7 +504,7 @@ public class AgnesProviderAdapter implements AiProviderAdapter {
      */
     private String agnesErrorMessage(JSONObject response) {
         Object error = response.get("error");
-        if (error instanceof SystemMessage message) {
+        if (error instanceof String message) {
             return message;
         }
         if (error instanceof JSONObject jsonObject) {

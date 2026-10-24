@@ -1,6 +1,7 @@
 package com.novanovastudio.service;
 
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
@@ -133,7 +134,7 @@ class AiTaskServiceTest {
                         new com.alibaba.fastjson2.JSONObject(), new VideoBillingConfiguration("generation", 3,
                         Map.of(VideoGenerationMode.TEXT_TO_VIDEO, Map.of("720p", 6),
                                 VideoGenerationMode.IMAGE_TO_VIDEO, Map.of("720p", 8),
-                                VideoGenerationMode.REFERENCE_TO_VIDEO, Map.of("720p", 10))), null, null, false, null),
+                                VideoGenerationMode.REFERENCE_TO_VIDEO, Map.of("720p", 10))), null, null, false, null, false, null),
                 new PersistenceDtos.ModelConfig("model-config-3", "channel-1", "model-1", AiTaskTypes.TEXT, List.of(), true, 0, 0, true, "high")
         )));
         providerAdapter = mock(AiProviderAdapter.class);
@@ -489,7 +490,7 @@ class AiTaskServiceTest {
                 "model-config-2", "channel-1", "model-1", AiTaskTypes.VIDEO, List.of("reference-to-video", "audio-input"),
                 true, 0, 0, false, "high", "generation", 1, new JSONObject(),
                 new VideoBillingConfiguration("generation", 3, Map.of("reference-to-video", Map.of("720p", 10))),
-                null, null, true, Map.of("reference-to-video", group)))));
+                null, null, true, Map.of("reference-to-video", group), false, null))));
         var request = new AiTaskDtos.CreateAiTaskRequest(AiTaskTypes.VIDEO, "参考音频", "channel-1::model-1",
                 Map.of("seconds", 5, "size", "16:9", "resolution", "720p"), List.of(), List.of(),
                 AiTaskSources.VIDEO_PAGE, null, null, "reference-to-video", audioRequest().audioReferences());
@@ -540,7 +541,7 @@ class AiTaskServiceTest {
         Assertions.assertEquals(quoteError.getMessage(), createError.getMessage());
         Assertions.assertTrue(createError.getMessage().contains("16:9"));
         verify(repository, never()).createTask(any());
-        verify(creditService, never()).chargeTask(anyLong(), anyString(), any(), anyString(), any());
+        verify(creditService, never()).chargeTask(anyLong(), anyString(), anyInt(), anyString(), anyString());
         org.mockito.Mockito.verifyNoInteractions(customProviderAdapter);
     }
 
@@ -600,7 +601,7 @@ class AiTaskServiceTest {
                 "model-config-2", "channel-1", "model-1", "video", List.of("text-to-video", "reference-to-video"), true, 0, 0,
                 false, "high", "generation", 1, new JSONObject(), new VideoBillingConfiguration("generation", 3,
                 Map.of("text-to-video", Map.of("720p", 1), "reference-to-video", Map.of("720p", 1))),
-                null, null, true, Map.of("text-to-video", textGroup, "reference-to-video", referenceGroup)))));
+                null, null, true, Map.of("text-to-video", textGroup, "reference-to-video", referenceGroup), false, null))));
     }
 
 }

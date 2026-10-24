@@ -32,6 +32,8 @@ import java.util.Map;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
 import org.mockito.ArgumentCaptor;
 import org.springframework.test.util.ReflectionTestUtils;
 import reactor.core.publisher.Flux;
@@ -411,7 +413,7 @@ class CustomProviderAdapterTest {
             return Flux.just(response);
         });
 
-        StepVerifier.create(adapter.execute(agentContext("seedance-2.0-fast-text-to-video", "{\"model\": \"{{model}}\"}")))
+        StepVerifier.create(adapter.execute(agentContext("seedance-2.0-fast-text-to-video", "{}")))
                 .expectErrorMessage("测试已捕获请求").verify(Duration.ofSeconds(5));
     }
 
@@ -492,7 +494,7 @@ class CustomProviderAdapterTest {
         return new AiTaskExecutionContext(task,
                 new AiTaskDtos.AiChannelConfig("custom-channel", "自定义渠道", "https://provider.example", "test-key", "custom", List.of(request.model())),
                 request.model(), false, "", new JSONObject(), request, () -> Mono.just(false), progress -> Mono.empty(),
-                delta -> Mono.empty(), true, Map.of("reference-to-video", group));
+                delta -> Mono.empty(), true, Map.of("reference-to-video", group), false, null);
     }
 
     /**

@@ -30,6 +30,8 @@ import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
@@ -805,7 +807,7 @@ class PersistenceServiceTest {
         when(repository.updatePlatformAiModelConfig(record)).thenReturn(Mono.just(1L));
 
         PersistenceDtos.ModelConfig updated = service.updateModelConfig(new PersistenceDtos.UpdateModelConfigRequest(
-                created.id(), "image", List.of(), 0, 4, true, "high", "generation", 1, new JSONObject(), null, null, null, null, null)).block();
+                created.id(), "image", List.of(), 0, 4, true, "high", "generation", 1, new JSONObject(), null, null, null, null, null, false, null)).block();
 
         Assertions.assertNotNull(updated);
         Assertions.assertNull(updated.videoBillingConfiguration());
