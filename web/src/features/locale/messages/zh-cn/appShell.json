@@ -55,6 +55,8 @@
     "objectStorageRefreshed": "对象存储配置已刷新",
     "failedToRefreshObjectStorage": "刷新对象存储失败",
     "discardUnsavedChanges": "放弃未保存修改？",
+    "leavingDiscardsConfigurationChanges": "离开管理后台将丢弃未保存的配置，是否放弃修改？",
+    "retryConfiguration": "重新加载",
     "discardAndRefresh": "放弃并刷新",
     "setDefaultObjectStorage": "请设置默认对象存储",
     "objectStorageSaved": "对象存储配置已保存",

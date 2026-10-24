@@ -86,8 +86,6 @@ export const createModelCapabilityOptions = (translator: typeof translate = tran
 
 export const MODEL_CAPABILITY_OPTIONS = createModelCapabilityOptions();
 
-export type ConfigDialogTabKey = "channels" | "models" | "credits" | "invitationReward" | "checkIn" | "objectStorage";
-
 export type ModelChannel = {
     id: string;
     name: string;
@@ -138,9 +136,6 @@ type ConfigStore = {
     objectStorages: ObjectStorageConfig[];
     activeObjectStorageId: string;
     modelConfigs: ServerModelConfig[];
-    isConfigOpen: boolean;
-    configDialogTab: ConfigDialogTabKey;
-    shouldPromptContinue: boolean;
     hydrateConfig: () => Promise<void>;
     updateConfig: <K extends keyof AiConfig>(key: K, value: AiConfig[K]) => void;
     setChannels: (channels: ModelChannel[]) => void;
@@ -151,10 +146,6 @@ type ConfigStore = {
     deleteObjectStorage: (id: string) => void;
     setDefaultObjectStorage: (id: string) => void;
     isAiConfigReady: (config: AiConfig, model: string) => boolean;
-    openConfigDialog: (shouldPromptContinue?: boolean, tabKey?: ConfigDialogTabKey) => void;
-    setConfigDialogTab: (tabKey: ConfigDialogTabKey) => void;
-    setConfigDialogOpen: (isOpen: boolean) => void;
-    clearPromptContinue: () => void;
     refreshChannels: () => Promise<void>;
     refreshModelConfiguration: () => Promise<void>;
     refreshObjectStorages: () => Promise<void>;
@@ -220,9 +211,6 @@ export const useConfigStore = create<ConfigStore>()((set, get) => ({
     objectStorages: [defaultObjectStorage],
     activeObjectStorageId: defaultObjectStorage.id,
     modelConfigs: [],
-    isConfigOpen: false,
-    configDialogTab: "channels",
-    shouldPromptContinue: false,
     hydrateConfig: async () => {
         const user = useUserStore.getState().user;
         if (!user || (get().hydrated && get().hydratedUserId === user.id)) return;
@@ -330,10 +318,6 @@ export const useConfigStore = create<ConfigStore>()((set, get) => ({
         const selectedModel = model || config.model || config.imageModel || config.textModel;
         return Boolean(selectedModel && config.models.includes(normalizeModelOptionValue(selectedModel, config.channels)));
     },
-    openConfigDialog: (shouldPromptContinue = false, tabKey = "channels") => set({ isConfigOpen: true, shouldPromptContinue, configDialogTab: tabKey }),
-    setConfigDialogTab: (configDialogTab) => set({ configDialogTab }),
-    setConfigDialogOpen: (isConfigOpen) => set({ isConfigOpen }),
-    clearPromptContinue: () => set({ shouldPromptContinue: false }),
     refreshChannels: async () => {
         const data = await listChannels();
         set((state) => {

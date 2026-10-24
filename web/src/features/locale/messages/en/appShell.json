@@ -55,6 +55,8 @@
     "objectStorageRefreshed": "Object storage refreshed",
     "failedToRefreshObjectStorage": "Failed to refresh object storage",
     "discardUnsavedChanges": "Discard unsaved changes?",
+    "leavingDiscardsConfigurationChanges": "Leaving administration will discard unsaved configuration changes. Discard changes?",
+    "retryConfiguration": "Reload",
     "discardAndRefresh": "Discard and refresh",
     "setDefaultObjectStorage": "Set default object storage",
     "objectStorageSaved": "Object storage saved",

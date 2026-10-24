@@ -105,7 +105,7 @@ export function StoryboardVideoGenerationModal({ open, node, generating, referen
         }
         if (!modelReady) {
             onMissingVideoModelConfig?.();
-            message.error(translate("canvas.selectAnAvailableVideoModelFirst"));
+            message.warning(translate("settings.contactAdministratorForModel"));
             return;
         }
         if (!videoQuote.available) {

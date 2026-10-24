@@ -26,7 +26,6 @@ import { createModelCapabilityOptions,
     useConfigStore,
     type AiConfig,
     type ApiCallFormat,
-    type ConfigDialogTabKey,
     type CustomModelGroupConfig,
     type ModelCapability,
     type ModelChannel,
@@ -69,6 +68,9 @@ import type { CustomGroupField, CustomModelMode } from "./model-config-copy";
 import { ModelConfigAutoFillModal } from "./model-config-auto-fill-modal";
 import { VideoGenerationConstraintsEditor } from "./video-generation-constraints-editor";
 import { videoConstraintConfigurationIssues } from "@/features/generation/lib/video-generation-constraints";
+import { useConfigurationLeaveGuard } from "./use-configuration-leave-guard";
+
+type ConfigurationTabKey = "channels" | "models" | "credits" | "invitationReward" | "checkIn" | "objectStorage";
 
 type ModelGroup = {
     capability: ModelCapability;
@@ -154,23 +156,21 @@ const createObjectStorageProviderFields = (translator: typeof translate = transl
     },
 });
 
-export function AppConfigModal() {
+export function SystemConfiguration() {
     const translate = useTranslation();
     const { message, modal } = App.useApp();
     const user = useUserStore((state) => state.user);
     const config = useConfigStore((state) => state.config);
     const modelConfigs = useConfigStore((state) => state.modelConfigs);
     const objectStorages = useConfigStore((state) => state.objectStorages);
-    const isConfigOpen = useConfigStore((state) => state.isConfigOpen);
-    const configDialogTab = useConfigStore((state) => state.configDialogTab);
-    const setConfigDialogTab = useConfigStore((state) => state.setConfigDialogTab);
-    const setConfigDialogOpen = useConfigStore((state) => state.setConfigDialogOpen);
     const refreshChannels = useConfigStore((state) => state.refreshChannels);
     const refreshModelConfiguration = useConfigStore((state) => state.refreshModelConfiguration);
     const refreshObjectStorages = useConfigStore((state) => state.refreshObjectStorages);
-    const [activeTab, setActiveTab] = useState<ConfigDialogTabKey>("channels");
+    const [activeTab, setActiveTab] = useState<ConfigurationTabKey>("channels");
     const [draftsReady, setDraftsReady] = useState(false);
-    const [savingTab, setSavingTab] = useState<ConfigDialogTabKey | "">("");
+    const [loadError, setLoadError] = useState("");
+    const [loadAttempt, setLoadAttempt] = useState(0);
+    const [savingTab, setSavingTab] = useState<ConfigurationTabKey | "">("");
     const [loadingChannelId, setLoadingChannelId] = useState("");
     const [refreshingObjectStorages, setRefreshingObjectStorages] = useState(false);
     const [testingObjectStorageId, setTestingObjectStorageId] = useState("");
@@ -197,7 +197,6 @@ export function AppConfigModal() {
     const [collapsedEditingCapabilities, setCollapsedEditingCapabilities] = useState<string[]>([]);
     const [modelConfigCopyTarget, setModelConfigCopyTarget] = useState<ServerModelConfig | null>(null);
     const [autoFillConfigMode, setAutoFillConfigMode] = useState<VideoGenerationMode | null>(null);
-    const initializedRef = useRef(false);
     const editingModelIsMedia = Boolean(editingModelConfig && (editingModelConfig.modelType === "image" || editingModelConfig.modelType === "video"));
 
     const resetChannelDraft = useCallback((resetCollapsed = false) => {
@@ -230,18 +229,9 @@ export function AppConfigModal() {
     }, [resetChannelDraft, resetModelConfigDraft, resetObjectStorageDraft]);
 
     useEffect(() => {
-        if (isConfigOpen) setActiveTab(configDialogTab);
-    }, [configDialogTab, isConfigOpen]);
-
-    useEffect(() => {
-        if (!isConfigOpen) {
-            initializedRef.current = false;
-            setDraftsReady(false);
-            return;
-        }
-        if (initializedRef.current) return;
-        initializedRef.current = true;
+        if (user?.role !== "admin") return;
         setDraftsReady(false);
+        setLoadError("");
         let active = true;
         void Promise.all([refreshModelConfiguration(), refreshObjectStorages(), getCreditSettings(), getInvitationRewardSettings(), getCheckInRewardSettings()])
             .then(([, , creditSettings, invitationRewardSettings, checkInSettings]) => {
@@ -255,19 +245,14 @@ export function AppConfigModal() {
                 setDraftCheckInCredits(checkInSettings.checkInCredits);
                 setDraftsReady(true);
             })
-            .catch(() => {
+            .catch((error) => {
                 if (!active) return;
-                message.error(translate("appShell.failedToLoadConfiguration"));
-                setDraftsReady(true);
+                setLoadError(error instanceof Error ? error.message : translate("appShell.failedToLoadConfiguration"));
             });
         return () => {
             active = false;
         };
-    }, [isConfigOpen, message, refreshModelConfiguration, refreshObjectStorages, resetAllDrafts]);
-
-    useEffect(() => {
-        if (user?.role !== "admin" && isConfigOpen) setConfigDialogOpen(false);
-    }, [isConfigOpen, setConfigDialogOpen, user?.role]);
+    }, [loadAttempt, user?.role, refreshModelConfiguration, refreshObjectStorages, resetAllDrafts]);
 
     const draftConfig = useMemo(() => {
         const nextConfig = configFromModelConfigs(draftChannels, draftModelConfigs, config);
@@ -291,8 +276,11 @@ export function AppConfigModal() {
     const creditsDirty = draftInitialCredits !== creditBaseline;
     const invitationRewardDirty = draftInvitationRewardCredits !== invitationRewardBaseline;
     const checkInDirty = draftCheckInCredits !== checkInBaseline;
-    const hasUnsavedChanges = channelsDirty || modelConfigsDirty || objectStoragesDirty || creditsDirty || invitationRewardDirty || checkInDirty;
+    const editingModelBaseline = editingModelConfig && draftModelConfigs.find((item) => item.id === editingModelConfig.id);
+    const modelEditorDirty = Boolean(editingModelConfig && (!sameValue(editingModelConfig, editingModelBaseline) || editingCustomBodyParameters !== JSON.stringify(editingModelBaseline?.customBodyParameters || {}, null, 2)));
+    const hasUnsavedChanges = channelsDirty || modelConfigsDirty || objectStoragesDirty || creditsDirty || invitationRewardDirty || checkInDirty || modelEditorDirty;
     const isSaving = Boolean(savingTab);
+    useConfigurationLeaveGuard(draftsReady && hasUnsavedChanges);
 
     const updateDraftChannel = (id: string, patch: Partial<ModelChannel>) => {
         setDraftChannels((channels) => channels.map((channel) => (channel.id === id ? { ...channel, ...patch, models: patch.models ? uniqueModels(patch.models) : channel.models } : channel)));
@@ -812,31 +800,14 @@ export function AppConfigModal() {
     };
 
     const changeActiveTab = (tabKey: string) => {
-        const nextTab = tabKey as ConfigDialogTabKey;
-        setActiveTab(nextTab);
-        setConfigDialogTab(nextTab);
-    };
-
-    const closeConfigDialog = () => {
-        if (!hasUnsavedChanges) {
-            setConfigDialogOpen(false);
-            return;
-        }
-        modal.confirm({
-            title: translate("appShell.discardUnsavedChanges"),
-            content: translate("appShell.closingWillDiscardUnsavedChangesInAllTabs"),
-            okText: translate("appShell.discardChanges"),
-            okType: "danger",
-            cancelText: translate("appShell.continueEditing"),
-            onOk: () => setConfigDialogOpen(false),
-        });
+        setActiveTab(tabKey as ConfigurationTabKey);
     };
 
     if (user?.role !== "admin") return null;
 
     return (
-        <Modal title={<div className="text-lg font-semibold">{translate("appShell.configurationPreferences")}</div>} open={isConfigOpen} width={980} centered onCancel={closeConfigDialog} footer={null} styles={{ body: { height: "72vh", overflowY: "auto", paddingRight: 12 } }}>
-            {!draftsReady ? (
+        <div className="min-w-0">
+            {loadError ? <Alert type="error" showIcon title={loadError} action={<Button onClick={() => setLoadAttempt((attempt) => attempt + 1)}>{translate("appShell.retryConfiguration")}</Button>} /> : !draftsReady ? (
                 <div className="flex h-40 items-center justify-center text-sm text-[var(--studio-muted)]">{translate("appShell.loadingConfiguration")}</div>
             ) : (
                 <Tabs
@@ -1726,7 +1697,7 @@ export function AppConfigModal() {
                     onFill={autoFillCustomConfig}
                 />
             ) : null}
-        </Modal>
+        </div>
     );
 }
 

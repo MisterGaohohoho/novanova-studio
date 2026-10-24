@@ -59,6 +59,7 @@ import { getHomepageTargetPath } from "@/features/homepage/api/homepage-showcase
 import { adminCreditFilterKey, adminCreditUserLabel } from "./admin-credit-utils";
 import { CreditCardManagement } from "./components/credit-card-management";
 import { ApiLogsManagement } from "./components/api-logs-management";
+import { SystemConfiguration } from "@/features/app-shell/components/system-configuration";
 import { GenerationStyleCover } from "@/features/generation/components/generation-style-picker";
 import { uploadImage } from "@/features/storage/services/image-storage";
 import { CREDIT_TRANSACTION_PAGE_SIZE, creditTransactionDetail, creditTransactionIcon, creditTransactionTypeLabel, formatCreditChange, formatCredits, formatCreditTime, normalizeGenerationDistribution, normalizeModelDistribution } from "@/app/(user)/credits/credit-page-utils";
@@ -99,8 +100,10 @@ export default function AdminSystemPage() {
                 </header>
                 <Tabs
                     defaultActiveKey="users"
+                    destroyOnHidden={false}
                     items={[
                         { key: "users", label: translate("administration.userManagement"), children: <UserManagement /> },
+                        { key: "configuration", label: translate("appShell.configurationPreferences"), children: <SystemConfiguration /> },
                         { key: "credits", label: translate("administration.creditDetails"), children: <CreditConsumptionManagement /> },
                         { key: "creditCards", label: translate("administration.redemptionCodes"), children: <CreditCardManagement /> },
                         { key: "notifications", label: translate("administration.messageManagement"), children: <NotificationManagement /> },

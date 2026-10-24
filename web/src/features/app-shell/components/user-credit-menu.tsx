@@ -14,6 +14,7 @@ import { App, Dropdown } from "antd";
 import { useUserStore } from "@/features/auth/stores/use-user-store";
 import { logoutCurrentUser } from "@/services/api/server";
 import { cn } from "@/shared/lib/utils";
+import { confirmPageNavigation } from "@/shared/lib/navigation-history-guard";
 
 const creditNumberFormatter = { format: (value: number) => new Intl.NumberFormat(currentLanguageTag()).format(value) };
 
@@ -39,6 +40,7 @@ export function UserCreditMenu({ className }: UserCreditMenuProps) {
     const creditBalance = user && Number.isInteger(user.creditBalance) ? user.creditBalance : null;
 
     const handleLogout = async () => {
+        if (!await confirmPageNavigation()) return;
         try {
             await logoutCurrentUser();
         } catch {
