@@ -1,6 +1,7 @@
 package com.novanovastudio.service;
 
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
@@ -9,6 +10,8 @@ import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
+import com.alibaba.fastjson2.JSON;
+import com.alibaba.fastjson2.JSONObject;
 import com.novanovastudio.agent.AgentTaskOrchestrator;
 import com.novanovastudio.ai.AiProviderAdapter;
 import com.novanovastudio.ai.AiProviderAdapterRegistry;
@@ -23,6 +26,7 @@ import com.novanovastudio.common.BusinessException;
 import com.novanovastudio.dto.AiTaskDtos;
 import com.novanovastudio.dto.PersistenceDtos;
 import com.novanovastudio.dto.VideoBillingConfiguration;
+import com.novanovastudio.dto.VideoGenerationConstraints;
 import com.novanovastudio.entity.AiGenerationTask;
 import com.novanovastudio.repository.AiTaskRepository;
 import com.novanovastudio.security.CurrentUserProvider;
@@ -130,7 +134,7 @@ class AiTaskServiceTest {
                         new com.alibaba.fastjson2.JSONObject(), new VideoBillingConfiguration("generation", 3,
                         Map.of(VideoGenerationMode.TEXT_TO_VIDEO, Map.of("720p", 6),
                                 VideoGenerationMode.IMAGE_TO_VIDEO, Map.of("720p", 8),
-                                VideoGenerationMode.REFERENCE_TO_VIDEO, Map.of("720p", 10))), null, null, false, null),
+                                VideoGenerationMode.REFERENCE_TO_VIDEO, Map.of("720p", 10))), null, null, false, null, false, null),
                 new PersistenceDtos.ModelConfig("model-config-3", "channel-1", "model-1", AiTaskTypes.TEXT, List.of(), true, 0, 0, true, "high")
         )));
         providerAdapter = mock(AiProviderAdapter.class);
@@ -241,6 +245,34 @@ class AiTaskServiceTest {
         service.executeQueuedTask("task-1").block();
 
         verify(creditService).refundTask(7L, "task-1", AiTaskTypes.IMAGE);
+    }
+
+    /** 图片任务执行时应读取绑定模型的开关，不能修改持久化的原始比例。 */
+    @Test
+    void shouldPassImageSizeConversionToBoundModelExecution() {
+        PersistenceDtos.ModelConfig enabled = new PersistenceDtos.ModelConfig(
+                "model-config-1", "channel-1", "model-1", AiTaskTypes.IMAGE, List.of(), true, 0, 0,
+                false, "high", "generation", 1, new JSONObject(), null, null, null, false, null, true,
+                Map.of("9:16", Map.of("2K", "1440x2560")));
+        when(persistenceService.getPlatformModelConfigs()).thenReturn(Mono.just(List.of(enabled)));
+        AiGenerationTask queuedTask = task("task-1");
+        queuedTask.setRequestData(JSON.toJSONString(new AiTaskDtos.CreateAiTaskRequest(AiTaskTypes.IMAGE, "图片", "model-1",
+                Map.of("size", "9:16", "resolution", "2K"), List.of(), List.of(), AiTaskSources.IMAGE_PAGE)));
+        when(repository.getTaskById("task-1")).thenReturn(Mono.just(queuedTask));
+        when(repository.markTaskRunningIfExecutable("task-1")).thenReturn(Mono.just(true));
+        when(eventPublisher.isCancelRequested("task-1")).thenReturn(Mono.just(false));
+        when(providerAdapter.execute(any())).thenAnswer(invocation -> {
+            com.novanovastudio.ai.AiTaskExecutionContext context = invocation.getArgument(0);
+            Assertions.assertTrue(context.convertImageSizeToPixels());
+            Assertions.assertEquals("1440x2560", context.imageSizeMappings().get("9:16").get("2K"));
+            Assertions.assertEquals("9:16", context.request().parameters().get("size"));
+            return Mono.just(new JSONObject());
+        });
+
+        service.executeQueuedTask("task-1").block();
+
+        verify(providerAdapter).execute(any());
+        Assertions.assertEquals("9:16", JSON.parseObject(queuedTask.getRequestData()).getJSONObject("parameters").getString("size"));
     }
 
     /** 已持久化模型配置缺失时，图片任务不得按同名模型改投。 */
@@ -447,6 +479,25 @@ class AiTaskServiceTest {
         verify(repository, never()).createTask(any(AiGenerationTask.class));
     }
 
+    /** 自定义 Evolink 接口仅按已配置的全能参考限制校验音频素材。 */
+    @Test
+    void shouldAllowCustomEvolinkAudioOnlyWhenConfigured() {
+        configureAudioModel("evolink");
+        var constraints = new VideoGenerationConstraints(2, 10, 0, 0, List.of("16:9"), 0, 1);
+        var group = new PersistenceDtos.CustomModelGroupConfig("/video", "POST", "video", "{}", null, null,
+                "url", null, null, null, null, null, null, constraints);
+        when(persistenceService.getPlatformModelConfigs()).thenReturn(Mono.just(List.of(new PersistenceDtos.ModelConfig(
+                "model-config-2", "channel-1", "model-1", AiTaskTypes.VIDEO, List.of("reference-to-video", "audio-input"),
+                true, 0, 0, false, "high", "generation", 1, new JSONObject(),
+                new VideoBillingConfiguration("generation", 3, Map.of("reference-to-video", Map.of("720p", 10))),
+                null, null, true, Map.of("reference-to-video", group), false, null))));
+        var request = new AiTaskDtos.CreateAiTaskRequest(AiTaskTypes.VIDEO, "参考音频", "channel-1::model-1",
+                Map.of("seconds", 5, "size", "16:9", "resolution", "720p"), List.of(), List.of(),
+                AiTaskSources.VIDEO_PAGE, null, null, "reference-to-video", audioRequest().audioReferences());
+
+        Assertions.assertEquals(10, service.quoteTaskCredits(request).block().intValue());
+    }
+
     /** 音频请求即便声明合法，服务端也必须检查保存的实际媒体类型。 */
     @Test
     void shouldRejectStoredAudioTypeMismatch() {
@@ -466,7 +517,7 @@ class AiTaskServiceTest {
                 "channel-1", "音频测试渠道", "https://example.com", "key", format, List.of("model-1")))));
         when(persistenceService.getPlatformModelConfigs()).thenReturn(Mono.just(List.of(new PersistenceDtos.ModelConfig(
                 "model-config-2", "channel-1", "model-1", AiTaskTypes.VIDEO, List.of("reference-to-video", "audio-input"), true, 0, 0, true, "high", "generation", 1,
-                new com.alibaba.fastjson2.JSONObject(), new VideoBillingConfiguration("generation", 3, Map.of("reference-to-video", Map.of("720p", 10))), null, null, false, null))));
+                new com.alibaba.fastjson2.JSONObject(), new VideoBillingConfiguration("generation", 3, Map.of("reference-to-video", Map.of("720p", 10))), null, null, false, null, false, null))));
     }
 
     /**
@@ -477,6 +528,80 @@ class AiTaskServiceTest {
         return new AiTaskDtos.CreateAiTaskRequest(AiTaskTypes.VIDEO, "参考音频1", "channel-1::model-1",
                 Map.of("seconds", 5, "resolution", "720p"), List.of(), List.of(), AiTaskSources.VIDEO_PAGE, null, null, "reference-to-video",
                 List.of(new AiTaskDtos.AiTaskMediaReference("audio-1", "配乐", "audio/mpeg", "audio:reference", "https://example.com/audio.mp3")));
+    }
+
+    /** 非法自定义输入在报价和创建时返回相同原因，不写任务、不扣费、不派发供应商。 */
+    @Test
+    void shouldRejectCustomVideoBeforeSideEffects() {
+        configureCustomVideoModel(2);
+        var request = new AiTaskDtos.CreateAiTaskRequest("video", "生成视频", "channel-1::model-1",
+                Map.of("seconds", 5, "size", "4:3", "resolution", "720p"), List.of(), List.of(), "videoPage", null, null, "text-to-video");
+        var quoteError = Assertions.assertThrows(BusinessException.class, () -> service.quoteTaskCredits(request).block());
+        var createError = Assertions.assertThrows(BusinessException.class, () -> service.createTask(request).block());
+        Assertions.assertEquals(quoteError.getMessage(), createError.getMessage());
+        Assertions.assertTrue(createError.getMessage().contains("16:9"));
+        verify(repository, never()).createTask(any());
+        verify(creditService, never()).chargeTask(anyLong(), anyString(), anyInt(), anyString(), anyString());
+        org.mockito.Mockito.verifyNoInteractions(customProviderAdapter);
+    }
+
+    /** 排队后配置收紧时，执行前再次拒绝，供应商不能收到非法请求。 */
+    @Test
+    void shouldRevalidateCustomVideoBeforeQueuedExecution() {
+        configureCustomVideoModel(2);
+        var queued = task("task-1");
+        queued.setTaskType("video");
+        queued.setModelConfigId("model-config-2");
+        queued.setRequestData(JSON.toJSONString(new AiTaskDtos.CreateAiTaskRequest("video", "生成视频", "channel-1::model-1",
+                Map.of("seconds", 11, "size", "16:9", "resolution", "720p"), List.of(), List.of(), "videoPage", null, null, "text-to-video")));
+        when(repository.getTaskById("task-1")).thenReturn(Mono.just(queued));
+        when(repository.markTaskRunningIfExecutable("task-1")).thenReturn(Mono.just(true));
+        when(eventPublisher.isCancelRequested("task-1")).thenReturn(Mono.just(false));
+        service.executeQueuedTask("task-1").block();
+        verify(creditService).refundTask(7L, "task-1", "video");
+        verify(customProviderAdapter, never()).execute(any());
+        verify(providerAdapter, never()).execute(any());
+    }
+
+    /** 已登录用户读取的模型目录包含限制，但不包含调用模板。 */
+    @Test
+    void shouldExposeCustomVideoConstraintsWithoutTemplates() {
+        configureCustomVideoModel(2);
+        var option = service.listModels().block().models().getFirst();
+        Assertions.assertTrue(option.isCustomModel());
+        Assertions.assertEquals(10, option.videoGenerationConstraints().get("text-to-video").maximumDurationSeconds());
+        Assertions.assertFalse(JSON.toJSONString(option).contains("requestTemplate"));
+    }
+
+    /** 工作流图片阶段也必须检查未来视频需要的两张素材和比例。 */
+    @Test
+    void shouldPreflightExpectedWorkflowReferencesBeforeImageStage() {
+        configureCustomVideoModel(1);
+        org.springframework.test.util.ReflectionTestUtils.setField(service, "videoWorkflowRegistry", new com.novanovastudio.agent.workflow.VideoWorkflowRegistry(
+                List.of(new com.novanovastudio.agent.workflow.FirstLastFrameVideoWorkflow())));
+        var request = new AiTaskDtos.VideoWorkflowQuoteRequest("first-last-frame", "channel-1::model-1", "channel-1::model-1",
+                "720p", "5", "image", "16:9");
+        var quote = service.quoteVideoWorkflow(request).block();
+        Assertions.assertFalse(quote.available());
+        Assertions.assertTrue(quote.reason().contains("2"));
+        verify(repository, never()).createTask(any());
+        org.mockito.Mockito.verifyNoInteractions(customProviderAdapter);
+    }
+
+    /**
+     * 配置带独立模式限制的自定义测试模型。
+     * @param referenceImages int 全能参考图片上限
+     */
+    private void configureCustomVideoModel(int referenceImages) {
+        var text = new VideoGenerationConstraints(2, 10, 0, 0, List.of("16:9", "auto"), null, null);
+        var reference = new VideoGenerationConstraints(2, 10, 0, referenceImages, List.of("16:9"), 1, 0);
+        var textGroup = new PersistenceDtos.CustomModelGroupConfig("/video", "POST", "video", "{}", null, null, "url", null, null, null, null, null, null, text);
+        var referenceGroup = new PersistenceDtos.CustomModelGroupConfig("/video", "POST", "video", "{}", null, null, "url", null, null, null, null, null, null, reference);
+        when(persistenceService.getPlatformModelConfigs()).thenReturn(Mono.just(List.of(new PersistenceDtos.ModelConfig(
+                "model-config-2", "channel-1", "model-1", "video", List.of("text-to-video", "reference-to-video"), true, 0, 0,
+                false, "high", "generation", 1, new JSONObject(), new VideoBillingConfiguration("generation", 3,
+                Map.of("text-to-video", Map.of("720p", 1), "reference-to-video", Map.of("720p", 1))),
+                null, null, true, Map.of("text-to-video", textGroup, "reference-to-video", referenceGroup), false, null))));
     }
 
 }

@@ -216,11 +216,20 @@ public final class PersistenceRecords {
         /** 模型同时执行请求数量 */
         private Integer requestConcurrency;
 
+        /** 图像模型是否将size比例按分辨率转换为像素尺寸，默认关闭。 */
+        private Boolean convertImageSizeToPixels;
+
+        /** 图像模型的比例与分辨率档位的像素尺寸映射JSON，空值使用默认表。 */
+        private String imageSizeMappings;
+
         /** 模型JSON POST请求的自定义请求体参数JSON */
         private String customBodyParameters;
 
         /** 视频模型模式与分辨率分档计费配置JSON */
         private String videoBillingConfiguration;
+
+        /** 图片模型按1K、2K、4K分辨率配置的积分单价表JSON */
+        private String imageBillingConfiguration;
 
         /** 模型展示名称，为空或与真实模型名相同时展示真实模型名，仅影响展示不影响调用 */
         private String displayName;

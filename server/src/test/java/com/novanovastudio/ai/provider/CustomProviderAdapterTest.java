@@ -32,6 +32,8 @@ import java.util.Map;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
 import org.mockito.ArgumentCaptor;
 import org.springframework.test.util.ReflectionTestUtils;
 import reactor.core.publisher.Flux;
@@ -237,6 +239,207 @@ class CustomProviderAdapterTest {
     }
 
     /**
+     * 自定义图片能力均应按模型开关替换size，同时保留模板写死的size。
+     *
+     * @param conversion boolean 是否转换为像素
+     * @param editing boolean 是否为图生图
+     * @param custom boolean 是否使用模型独立的尺寸映射
+     */
+    @ParameterizedTest
+    @CsvSource({"false,false,false", "true,false,false", "false,true,false", "true,true,false",
+            "false,false,true", "true,false,true", "false,true,true", "true,true,true"})
+    void shouldResolveTemplateSizeWithoutChangingOriginalRatio(boolean conversion, boolean editing, boolean custom) {
+        // 图生图请求必须把参考图写进请求体，否则适配器会在发请求前拦截。
+        String template = editing
+                ? "{\"size\":\"{{size}}\",\"resolution\":\"{{resolution}}\",\"image\":\"https://provider.example/reference.png\"}"
+                : "{\"size\":\"{{size}}\",\"resolution\":\"{{resolution}}\"}";
+        AiTaskExecutionContext context = imageContext(conversion, editing, template, null,
+                custom ? Map.of("9:16", Map.of("2K", "1440x2560")) : null);
+
+        StepVerifier.create(adapter.execute(context)).expectErrorMessage("测试已捕获请求").verify(Duration.ofSeconds(5));
+
+        JSONObject body = submittedBody();
+        Assertions.assertEquals(conversion ? custom ? "1440x2560" : "1152x2048" : "9:16", body.getString("size"));
+        Assertions.assertEquals("2K", body.getString("resolution"));
+        Assertions.assertEquals("9:16", context.request().parameters().get("size"));
+        verifyNoInteractions(model);
+    }
+
+    /**
+     * 模板未引用size时无需查表，手写值与省略size均不受缺失映射影响。
+     *
+     * @param editing boolean 是否为图生图
+     * @param fixedSize boolean 模板是否写死size
+     */
+    @ParameterizedTest
+    @CsvSource({"false,false", "false,true", "true,false", "true,true"})
+    void shouldSkipConversionForTemplateWithoutSizePlaceholder(boolean editing, boolean fixedSize) {
+        // 图生图请求必须把参考图写进请求体，否则适配器会在发请求前拦截。
+        String template = fixedSize ? "{\"size\":\"1024x1024\"" : "{\"prompt\":\"{{prompt}}\"";
+        template += editing ? ",\"image\":\"https://provider.example/reference.png\"}" : "}";
+
+        StepVerifier.create(adapter.execute(imageContext(true, editing, template, null, Map.of())))
+                .expectErrorMessage("测试已捕获请求").verify(Duration.ofSeconds(5));
+
+        Assertions.assertEquals(fixedSize ? "1024x1024" : null, submittedBody().getString("size"));
+        verifyNoInteractions(model);
+    }
+
+    /**
+     * AI构造请求应接收原始比例、分辨率和计算好的size，不自行换算。
+     *
+     * @param conversion boolean 是否转换为像素
+     * @param expectedSize String 应传递的请求尺寸
+     * @param custom boolean 是否使用模型尺寸表
+     */
+    @ParameterizedTest
+    @CsvSource({"true,1152x2048,false", "false,9:16,false", "true,1440x2560,true"})
+    void shouldDescribeCalculatedSizeToRequestAgent(boolean conversion, String expectedSize, boolean custom) {
+        givenAgentOutputs("{\"size\":\"" + expectedSize + "\"}");
+
+        AiTaskExecutionContext context = imageContext(conversion, false, "{}", "按参数构造size",
+                custom ? Map.of("9:16", Map.of("2K", "1440x2560")) : null);
+        StepVerifier.create(adapter.execute(context)).expectErrorMessage("测试已捕获请求").verify(Duration.ofSeconds(5));
+
+        Assertions.assertEquals(expectedSize, submittedBody().getString("size"));
+        verify(model).stream(argThat(messages -> {
+            String prompt = messages.getFirst().getTextContent();
+            return prompt.contains("画幅: 9:16") && prompt.contains("分辨率: 2K")
+                    && prompt.contains("请求size: " + expectedSize) && prompt.contains("不要自行换算");
+        }), anyList(), any(GenerateOptions.class));
+    }
+
+    /** 选择未配置的档位时应在发起供应商请求前失败。 */
+    @Test
+    void shouldRejectUnconfiguredSizeBeforeSendingRequest() {
+        AiTaskExecutionContext context = imageContext(true, false, "{\"size\":\"{{size}}\"}", null, Map.of());
+
+        StepVerifier.create(adapter.execute(context))
+                .expectErrorSatisfies(exception -> Assertions.assertInstanceOf(BusinessException.class, exception))
+                .verify(Duration.ofSeconds(5));
+
+        verifyNoInteractions(aiHttpClient);
+    }
+
+    /**
+     * 构造用于自定义图片请求尺寸验证的执行上下文。
+     *
+     * @param conversion boolean 是否转换为像素
+     * @param editing boolean 是否为图生图
+     * @param requestTemplate String 请求模板
+     * @param aiRequestPrompt String AI请求构造提示词
+     * @param mappings Map<String, Map<String, String>> 模型独立的尺寸映射
+     * @return AiTaskExecutionContext 自定义模型图片任务上下文
+     */
+    private AiTaskExecutionContext imageContext(boolean conversion, boolean editing, String requestTemplate,
+                                                String aiRequestPrompt, Map<String, Map<String, String>> mappings) {
+        AiGenerationTask task = new AiGenerationTask();
+        task.setId("custom-image-task");
+        task.setUserId(1L);
+        task.setTaskType("image");
+        AiTaskDtos.CreateAiTaskRequest request = new AiTaskDtos.CreateAiTaskRequest("image", "生成小猫", "custom-image",
+                Map.of("size", "9:16", "resolution", "2K"),
+                editing ? mediaReferences(List.of("https://provider.example/reference.png"), "image/png") : List.of(),
+                List.of(), "imagePage", null, null, null, null);
+        PersistenceDtos.CustomModelGroupConfig group = new PersistenceDtos.CustomModelGroupConfig("/generate", "POST",
+                "custom-image", requestTemplate, aiRequestPrompt, "{}", "data.url", "", "GET", "", "", "", "");
+        return new AiTaskExecutionContext(task,
+                new AiTaskDtos.AiChannelConfig("custom-channel", "自定义渠道", "https://provider.example", "test-key", "custom", List.of("custom-image")),
+                "custom-image", false, "", new JSONObject(), request, () -> Mono.just(false), progress -> Mono.empty(),
+                delta -> Mono.empty(), true, Map.of(editing ? "image-to-image" : "text-to-image", group), conversion, mappings);
+    }
+
+    /**
+     * AI把模型名改写成近似标识时，服务端应回填为配置的请求模型名称。
+     *
+     * @return void 无返回值
+     */
+    @Test
+    void shouldRestoreModelNameRewrittenByAgent() {
+        givenAgentOutputs("{\"model\":\"seedance-2.0-fast-to-video\",\"prompt\":\"用户提示词\"}");
+
+        StepVerifier.create(adapter.execute(agentContext("seedance-2.0-fast-text-to-video", "{\"model\":\"{{model}}\",\"prompt\":\"{{prompt}}\"}")))
+                .expectErrorMessage("测试已捕获请求").verify(Duration.ofSeconds(5));
+
+        Assertions.assertEquals("seedance-2.0-fast-text-to-video", submittedBody().getString("model"));
+    }
+
+    /**
+     * AI改写用户提示词时，服务端应回填为用户原始提示词。
+     *
+     * @return void 无返回值
+     */
+    @Test
+    void shouldRestorePromptRewrittenByAgent() {
+        givenAgentOutputs("{\"model\":\"seedance-2.0-fast-text-to-video\",\"prompt\":\"被改写的提示词\"}");
+
+        StepVerifier.create(adapter.execute(agentContext("seedance-2.0-fast-text-to-video", "{\"model\":\"{{model}}\",\"prompt\":\"{{prompt}}\"}")))
+                .expectErrorMessage("测试已捕获请求").verify(Duration.ofSeconds(5));
+
+        Assertions.assertEquals("真实电影感，清晨窗光下的木质桌面", submittedBody().getString("prompt"));
+    }
+
+    /**
+     * AI输出没有模型字段时不应擅自新增，避免引入用户未要求的字段。
+     *
+     * @return void 无返回值
+     */
+    @Test
+    void shouldNotAddModelFieldWhenAgentOmitsIt() {
+        givenAgentOutputs("{\"duration\":5}");
+
+        StepVerifier.create(adapter.execute(agentContext("seedance-2.0-fast-text-to-video", "{\"duration\":5}")))
+                .expectErrorMessage("测试已捕获请求").verify(Duration.ofSeconds(5));
+
+        Assertions.assertFalse(submittedBody().containsKey("model"));
+    }
+
+    /**
+     * 构造提示词里的模型占位符应替换为真实模型名，让模型直接照抄而无需翻译。
+     *
+     * @return void 无返回值
+     */
+    @Test
+    void shouldRenderModelPlaceholderInAgentPrompt() {
+        ChatResponse response = mock(ChatResponse.class);
+        TextBlock text = mock(TextBlock.class);
+        when(text.getText()).thenReturn("{\"model\":\"seedance-2.0-fast-text-to-video\"}");
+        when(response.getContent()).thenReturn(List.of(text));
+        when(model.stream(anyList(), anyList(), any(GenerateOptions.class))).thenAnswer(invocation -> {
+            List<io.agentscope.core.message.Msg> messages = invocation.getArgument(0);
+            String prompt = messages.getFirst().getTextContent();
+            Assertions.assertTrue(prompt.contains("\"model\": \"seedance-2.0-fast-text-to-video\""));
+            Assertions.assertFalse(prompt.contains("{{model}}"));
+            return Flux.just(response);
+        });
+
+        StepVerifier.create(adapter.execute(agentContext("seedance-2.0-fast-text-to-video", "{}")))
+                .expectErrorMessage("测试已捕获请求").verify(Duration.ofSeconds(5));
+    }
+
+    /**
+     * 构造用于AI构造请求体验证的视频任务上下文。
+     *
+     * @param requestModelName String 配置的请求模型名称
+     * @param requestTemplate String 请求示例模板
+     * @return AiTaskExecutionContext 自定义模型视频任务上下文
+     */
+    private AiTaskExecutionContext agentContext(String requestModelName, String requestTemplate) {
+        AiGenerationTask task = new AiGenerationTask();
+        task.setId("custom-agent-task");
+        task.setUserId(1L);
+        task.setTaskType("video");
+        AiTaskDtos.CreateAiTaskRequest request = new AiTaskDtos.CreateAiTaskRequest("video", "真实电影感，清晨窗光下的木质桌面", requestModelName,
+                Map.of("resolution", "480p", "seconds", "5"), List.of(), List.of(), "videoPage", null, null, "text-to-video", null);
+        PersistenceDtos.CustomModelGroupConfig group = new PersistenceDtos.CustomModelGroupConfig("/generate", "POST",
+                requestModelName, requestTemplate, "model固定不变：{\"model\": \"{{model}}\"}", "{}", "data.url", "", "GET", "", "", "", "");
+        return new AiTaskExecutionContext(task,
+                new AiTaskDtos.AiChannelConfig("custom-channel", "自定义渠道", "https://provider.example", "test-key", "custom", List.of(requestModelName)),
+                requestModelName, false, "", new JSONObject(), request, () -> Mono.just(false), progress -> Mono.empty(),
+                delta -> Mono.empty(), true, Map.of("text-to-video", group), false, null);
+    }
+
+    /**
      * 配置模型流式响应，多个输出依次用于重试，最后一个输出可持续返回。
      *
      * @param outputs String[] AI构造的JSON文本
@@ -291,7 +494,7 @@ class CustomProviderAdapterTest {
         return new AiTaskExecutionContext(task,
                 new AiTaskDtos.AiChannelConfig("custom-channel", "自定义渠道", "https://provider.example", "test-key", "custom", List.of(request.model())),
                 request.model(), false, "", new JSONObject(), request, () -> Mono.just(false), progress -> Mono.empty(),
-                delta -> Mono.empty(), true, Map.of("reference-to-video", group));
+                delta -> Mono.empty(), true, Map.of("reference-to-video", group), false, null);
     }
 
     /**

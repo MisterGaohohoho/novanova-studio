@@ -118,12 +118,36 @@ flowchart TB
 | 字段 | 类型 | 说明 |
 | --- | --- | --- |
 | `request_concurrency` | `INTEGER` | 模型同时执行请求数量，最小值为 `1`，默认值为 `1`。 |
+| `convert_image_size_to_pixels` | `BOOLEAN` | 图像模型是否将 `size` 比例转换为像素尺寸，默认 `false`，普通模型和自定义模型共用。开启后按模型的 `image_size_mappings` 精确查表，未指定档位默认2K；不再按长边或公式计算。已给定像素尺寸原样使用，模板及自定义JSON中手写的size保持优先。接口字段为 `convertImageSizeToPixels`。 |
+| `image_size_mappings` | `JSONB` | 图像模型的尺寸映射，形如 `{"1:1":{"1K":"1024x1024","2K":"2048x2048","4K":"2880x2880"}}`，接口字段为 `imageSizeMappings`。SQL空值或JSON null使用系统默认表；自定义表独立保存，不与默认表逐项合并，未填档位明确报错。文本、视频模型不使用。 |
 | `custom_body_parameters` | `JSONB` | 模型 JSON POST 请求的自定义请求体参数，顶层必须为 JSON 对象，默认 `{}`。 |
 | `video_billing_configuration` | `JSONB` | 视频模型分档计费配置，包含唯一计费方式、最短生成秒数，以及文生视频、图生视频、全能参考三个模式各自的 `Auto/480p/720p/768p/1080p/2k/4k` 单价；空价格表示该模式和分辨率不可用。 |
+| `image_billing_configuration` | `JSONB` | 图片模型的分辨率价目表，形如 `{"resolutionPrices":{"1K":1,"2K":4,"4K":9}}`，接口字段为 `imageBillingConfiguration`。配置后按请求 `parameters.resolution`（缺省或 `auto` 按 `2K`）取价，请求档位未配置时直接报错；整列为空表示沿用模型 `credit_cost` 单价。文本、视频模型不使用。 |
 | `display_name` | `VARCHAR(255)` | 模型展示名称，为空或与真实模型名相同时展示真实模型名，仅影响展示不影响调用。 |
 | `model_icon` | `VARCHAR(64)` | 模型展示图标标识，为空时按模型名或渠道自动匹配，仅影响展示不影响调用。 |
 | `is_custom_model` | `BOOLEAN` | 是否启用自定义模型调用，独立于渠道调用格式，仅图片/视频模型支持，默认 `false`。 |
-| `custom_model_config` | `JSONB` | 自定义模型配置，按图片能力（`text-to-image`、`image-to-image`）或视频模式（`text-to-video`、`image-to-video`、`reference-to-video`）分组；每组含请求路径（以 `/` 开头，与渠道 Base URL 拼接，支持 `{{taskId}}` 占位符）、请求方法（`GET`/`POST`，默认 POST）、请求模型名称、请求示例 JSON 模板（支持 `{{prompt}}`、`{{model}}`、`{{references}}`、`{{videoReferences}}`、`{{audioReferences}}`、`{{size}}` 等占位符）、AI 构造请求体提示词（可选，配置后由 Agent 按提示词与本次参数生成请求体，替代模板拼接）、响应示例、结果路径（如 `data.image.url`）；视频模式额外含查询路径（支持 `{{taskId}}`）、查询方法、查询请求示例、AI 构造查询请求体提示词、查询响应示例、查询结果路径，用于异步任务轮询，轮询间隔统一使用 `AI_TASK_POLLING_INTERVAL_SECONDS` 配置。 |
+| `custom_model_config` | `JSONB` | 自定义模型配置，按图片能力（`text-to-image`、`image-to-image`）或视频模式（`text-to-video`、`image-to-video`、`reference-to-video`、`first-last-frame-to-video`）分组；每组含请求路径（以 `/` 开头，与渠道 Base URL 拼接，支持 `{{taskId}}` 占位符）、请求方法（`GET`/`POST`，默认 POST）、请求模型名称、请求示例 JSON 模板（支持 `{{prompt}}`、`{{model}}`、`{{references}}`、`{{videoReferences}}`、`{{audioReferences}}`、`{{size}}` 等占位符）、AI 构造请求体提示词（可选，配置后由 Agent 按提示词与本次参数生成请求体，替代模板拼接）、响应示例、结果路径（如 `data.image.url`）；视频模式额外含查询路径（支持 `{{taskId}}`）、查询方法、查询请求示例、AI 构造查询请求体提示词、查询响应示例、查询结果路径，用于异步任务轮询，轮询间隔统一使用 `AI_TASK_POLLING_INTERVAL_SECONDS` 配置。 每个启用的视频模式必须配置 `videoGenerationConstraints`：`minimumDurationSeconds`、`maximumDurationSeconds`（正整数秒）、`minimumImageCount`、`maximumImageCount`（非负整数，最小值不超过最大值）、`supportedAspectRatios`（至少一项：`16:9`、`9:16`、`1:1`、`4:3`、`3:4`、`21:9`、`auto`）；全能参考另需 `maximumVideoCount`、`maximumAudioCount`（非负整数），图片上限复用 `maximumImageCount`。文生视频图片范围固定为 0，首尾帧固定为 2，图生视频最少 1 张；全能参考至少允许一类素材且使用时至少提供一个素材，音频开关关闭时上限 0、开启时为正整数。有效最短时长取模式最短时长与计费最短时长的较大值，不能超过最长时长；缺失限制不自动补值。视频任务 `parameters.size` 使用比例字符串，自动比例为 `auto`。 |
+
+#### 图像模型默认尺寸表
+
+开启尺寸转换后使用下表，管理员可为每个图像模型修改或恢复默认值，未配置的组合不会自动推算。
+
+| 画幅比例 | 1K | 2K | 4K |
+| --- | --- | --- | --- |
+| 1:1 | 1024x1024 | 2048x2048 | 2880x2880 |
+| 1:2 | 512x1024 | 1024x2048 | 1648x3296 |
+| 2:1 | 1024x512 | 2048x1024 | 3296x1648 |
+| 9:16 | 720x1280 | 1152x2048 | 2160x3840 |
+| 16:9 | 1280x720 | 2048x1152 | 3840x2160 |
+| 3:4 | 864x1152 | 1536x2048 | 2448x3264 |
+| 4:3 | 1152x864 | 2048x1536 | 3264x2448 |
+| 3:2 | 1536x1024 | 2400x1600 | 3456x2304 |
+| 2:3 | 1024x1536 | 1600x2400 | 2304x3456 |
+| 5:4 | 1120x896 | 2240x1792 | 3200x2560 |
+| 4:5 | 896x1120 | 1792x2240 | 2560x3200 |
+| 21:9 | 1344x576 | 2016x864 | 3808x1632 |
+| 9:21 | 576x1344 | 864x2016 | 1632x3808 |
+
 
 ### `ai_generation_tasks`
 

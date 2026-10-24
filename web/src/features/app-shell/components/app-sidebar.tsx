@@ -3,7 +3,7 @@ import { useTranslation } from "@/features/locale/use-translation";
 
 
 import { useEffect, useState } from "react";
-import { Bell, Cog } from "lucide-react";
+import { Bell } from "lucide-react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { Popover, Tooltip } from "antd";
@@ -13,7 +13,6 @@ import { ThemePreferenceMenu } from "@/features/theme/components/theme-preferenc
 import { navigationTools, type NavigationToolSlug } from "@/shared/constants/navigation-tools";
 import { useUserStore } from "@/features/auth/stores/use-user-store";
 import { cn } from "@/shared/lib/utils";
-import { useConfigStore } from "@/features/settings/stores/use-config-store";
 import { useNotificationStore } from "@/features/notification/stores/use-notification-store";
 import { NotificationDetailModal } from "@/features/notification/components/notification-detail-modal";
 
@@ -21,7 +20,6 @@ export function AppSidebar() {
     const translate = useTranslation();
     const pathname = usePathname();
     const user = useUserStore((state) => state.user);
-    const openConfigDialog = useConfigStore((state) => state.openConfigDialog);
     const { notifications, unreadCount, loadNotifications } = useNotificationStore();
     const [detailNotification, setDetailNotification] = useState<(typeof notifications)[number] | null>(null);
 
@@ -114,13 +112,6 @@ export function AppSidebar() {
                             </button>
                         )}
                     </Tooltip>
-                    {user?.role === "admin" ? (
-                        <Tooltip title={translate("appShell.configure")} placement="right">
-                            <button type="button" className="sidebar-rail-action sidebar-rail-action-emphasis" onClick={() => openConfigDialog(false)} aria-label={translate("appShell.configure")}>
-                                <Cog className="size-4.5" />
-                            </button>
-                        </Tooltip>
-                    ) : null}
                     <LanguageMenu />
                     <ThemePreferenceMenu />
                 </div>

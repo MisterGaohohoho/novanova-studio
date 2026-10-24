@@ -5,8 +5,9 @@ import { translateMessage as translate } from "@/features/locale/translate";
 import { currentWebsiteLocale, currentLanguageTag } from "@/features/locale/translate";
 import { useLanguageStore } from "@/features/locale/language-store";
 import type { ObjectStorageConfig, ObjectStorageFile } from "@/shared/types/object-storage";
+import type { ImageSizeMappings } from "@/features/generation/lib/image-size-mappings";
 import { getAuthToken, useUserStore, type ServerUserProfile } from "@/features/auth/stores/use-user-store";
-import type { ApiCallFormat, CustomModelGroupConfig, ModelCreditUnit, VideoBillingConfiguration } from "@/features/settings/stores/use-config-store";
+import type { ApiCallFormat, CustomModelGroupConfig, ImageBillingConfiguration, ModelCreditUnit, VideoBillingConfiguration, VideoGenerationConstraints, VideoGenerationMode } from "@/features/settings/stores/use-config-store";
 
 type ApiResponse<T> = {
     code: number;
@@ -218,6 +219,9 @@ export type ServerAiModelList = {
         creditUnit: ModelCreditUnit;
         capabilities: string[];
         videoBillingConfiguration: VideoBillingConfiguration | null;
+        isCustomModel: boolean;
+        videoGenerationConstraints: Partial<Record<VideoGenerationMode, VideoGenerationConstraints>>;
+        imageBillingConfiguration: ImageBillingConfiguration | null;
         icon: string | null;
     }>;
     imageModels: string[];
@@ -297,8 +301,11 @@ export type ServerModelConfig = {
     thinkingEnabled: boolean;
     reasoningEffort: "high" | "max";
     requestConcurrency: number;
+    convertImageSizeToPixels: boolean;
+    imageSizeMappings: ImageSizeMappings | null;
     customBodyParameters: Record<string, unknown>;
     videoBillingConfiguration: VideoBillingConfiguration | null;
+    imageBillingConfiguration: ImageBillingConfiguration | null;
     displayName: string | null;
     modelIcon: string | null;
     isCustomModel: boolean;
@@ -902,9 +909,11 @@ export function deleteAsset(ids: string[]) {
     return serverPost("/assets/deleteAsset", { ids });
 }
 
-export async function listGenerationLogs<T>(logType: "image" | "video") {
-    const data = await serverGet<{ logs: T[] }>(`/generationLogs/listGenerationLogs?logType=${encodeURIComponent(logType)}`);
-    return data.logs || [];
+export type ServerGenerationLogPage<T> = { logs: T[]; hasMore: boolean };
+
+/** 按页读取生成记录，服务端固定每页最多返回15条。 */
+export function listGenerationLogs<T>(logType: "image" | "video", page = 1) {
+    return serverGet<ServerGenerationLogPage<T>>(`/generationLogs/listGenerationLogs?logType=${encodeURIComponent(logType)}&page=${page}`);
 }
 
 export function saveGenerationLog(logType: "image" | "video", log: unknown) {
@@ -972,7 +981,7 @@ export function createAiTask(input: ServerAiTaskCreateInput) {
     return serverPost<ServerAiTask>("/ai/task/createTask", input);
 }
 
-export function quoteVideoWorkflow(input: { workflowType: string; model: string; imageModel: string; resolution: string; seconds: string; stage?: "image" | "video" }) {
+export function quoteVideoWorkflow(input: { workflowType: string; model: string; imageModel: string; resolution: string; seconds: string; size?: string; stage?: "image" | "video" }) {
     return serverPost<ServerVideoWorkflowQuote>("/ai/video/workflowQuote", input);
 }
 
@@ -1064,7 +1073,7 @@ export function createModelConfig(config: Omit<ServerModelConfig, "id" | "defaul
     return serverPost<ServerModelConfig>("/config/model/createModelConfig", config);
 }
 
-export function updateModelConfig(config: Pick<ServerModelConfig, "id" | "modelType" | "capabilities" | "sortOrder" | "creditCost" | "creditUnit" | "thinkingEnabled" | "reasoningEffort" | "requestConcurrency" | "customBodyParameters" | "videoBillingConfiguration" | "displayName" | "modelIcon" | "isCustomModel" | "customModelConfig">) {
+export function updateModelConfig(config: Pick<ServerModelConfig, "id" | "modelType" | "capabilities" | "sortOrder" | "creditCost" | "creditUnit" | "thinkingEnabled" | "reasoningEffort" | "requestConcurrency" | "convertImageSizeToPixels" | "imageSizeMappings" | "customBodyParameters" | "videoBillingConfiguration" | "imageBillingConfiguration" | "displayName" | "modelIcon" | "isCustomModel" | "customModelConfig">) {
     return serverPost<ServerModelConfig>("/config/model/updateModelConfig", config);
 }
 

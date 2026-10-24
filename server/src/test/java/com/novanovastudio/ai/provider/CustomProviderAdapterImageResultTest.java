@@ -207,7 +207,7 @@ class CustomProviderAdapterImageResultTest {
                 "custom-image", false, "", new JSONObject(),
                 new AiTaskDtos.CreateAiTaskRequest(taskKind, "生成一只小猫", "custom-image", Map.of(), List.of(), List.of(), "imagePage"),
                 () -> Mono.just(false), progress -> Mono.empty(), delta -> Mono.empty(), true,
-                Map.of(AiTaskTypes.VIDEO.equals(taskKind) ? "text-to-video" : "text-to-image", group));
+                Map.of(AiTaskTypes.VIDEO.equals(taskKind) ? "text-to-video" : "text-to-image", group), false, null);
         return adapter.execute(context).block();
     }
 

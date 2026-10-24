@@ -228,8 +228,8 @@ export function StoryboardWorkspace({ open, node, composing, composingShotId, on
     const assetGeneration = node?.storyboard.assetGeneration;
     const assetGenerating = assetGeneration?.phase === "running";
     const selectedAssets = storyboardAssets.filter((asset) => selectedAssetIds.includes(asset.id));
-    const assetUnitCost = readStoryboardAssetImageCost(effectiveConfig.modelCosts, assetImageSettings.model, 1);
-    const assetTotalCredits = readStoryboardAssetImageCost(effectiveConfig.modelCosts, assetImageSettings.model, selectedAssets.length);
+    const assetUnitCost = readStoryboardAssetImageCost(effectiveConfig.modelCosts, assetImageSettings.model, 1, assetImageSettings.imageResolution);
+    const assetTotalCredits = readStoryboardAssetImageCost(effectiveConfig.modelCosts, assetImageSettings.model, selectedAssets.length, assetImageSettings.imageResolution);
     const selectedAssetNameError = selectedAssets.find((asset) => !asset.name.trim());
     const assetModelCostConfigured = effectiveConfig.modelCosts.some((item) => item.taskType === "image" && item.model === assetImageSettings.model);
     const assetModelReady = Boolean(assetImageSettings.model && effectiveConfig.imageModels.includes(assetImageSettings.model) && assetModelCostConfigured && isAiConfigReady(effectiveConfig, assetImageSettings.model));
@@ -260,7 +260,7 @@ export function StoryboardWorkspace({ open, node, composing, composingShotId, on
         }
         if (!promptModelReady) {
             onMissingTextModelConfig?.();
-            message.error(translate("canvas.selectATextModelBeforeGeneratingFinalPrompts"));
+            message.warning(translate("settings.contactAdministratorForModel"));
             return;
         }
         if (promptBalanceInsufficient) {
@@ -302,7 +302,7 @@ export function StoryboardWorkspace({ open, node, composing, composingShotId, on
         }
         if (!assetModelReady) {
             onMissingImageModelConfig?.();
-            message.error(translate("canvas.selectAnImageModelBeforeGeneratingAssets"));
+            message.warning(translate("settings.contactAdministratorForModel"));
             return;
         }
         if (assetBalanceInsufficient) {

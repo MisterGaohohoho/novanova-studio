@@ -5,6 +5,7 @@ import { useTranslation } from "@/features/locale/use-translation";
 
 import { useEffect, useId, useMemo, useState } from "react";
 import { Clapperboard } from "lucide-react";
+import { App } from "antd";
 
 import { Select, SelectContent, SelectItem, SelectTrigger } from "@/shared/components/ui/select";
 import { cn } from "@/shared/lib/utils";
@@ -29,6 +30,7 @@ type ModelPickerProps = {
 
 export function ModelPicker({ config, value, onChange, capability, className, fullWidth = false, placeholder = translate("settings.selectModel"), onMissingConfig, modelOptions, showRealName = false }: ModelPickerProps) {
     const translate = useTranslation();
+    const { message } = App.useApp();
     const pickerId = useId();
     const [open, setOpen] = useState(false);
     const current = value || "";
@@ -46,7 +48,9 @@ export function ModelPicker({ config, value, onChange, capability, className, fu
 
     const handleOpenChange = (nextOpen: boolean) => {
         if (nextOpen && !options.length) {
-            onMissingConfig?.();
+            if (onMissingConfig) onMissingConfig();
+            else message.warning(translate("settings.contactAdministratorForModel"));
+            return;
         }
         if (nextOpen) {
             window.dispatchEvent(new CustomEvent(MODEL_PICKER_OPEN_EVENT, { detail: pickerId }));
@@ -84,8 +88,8 @@ export function ModelPicker({ config, value, onChange, capability, className, fu
                     {options.length ? (
                         options.map((model) => <SelectItem key={model} value={model} textValue={modelLabel(model)} label={<ModelLabel config={config} model={model} showRealName={showRealName} />} />)
                     ) : (
-                        <SelectItem value="__empty__" disabled textValue={emptyModelLabel(config, capability)}>
-                            {emptyModelLabel(config, capability)}
+                        <SelectItem value="__empty__" disabled textValue={translate("settings.contactAdministratorForModel")}>
+                            {translate("settings.contactAdministratorForModel")}
                         </SelectItem>
                     )}
                 </SelectContent>
@@ -105,26 +109,6 @@ function isFilledText(value: string | undefined): value is string {
     return Boolean(value?.trim());
 }
 
-function emptyModelLabel(config: AiConfig, capability?: ModelCapability): string {
-    if (capability && config.models.length) return translate("settings.configureModelOptionsAboveFirst");
-    if (!config.models.length) return translate("settings.addAChannelAndModelInSettingsFirst");
-    const label = capabilityLabel(capability);
-    return label ? translate("settings.noMatchingModels", { value0: label }) : translate("settings.noAvailableModels");
-}
-
-function capabilityLabel(capability?: ModelCapability): string {
-    switch (capability) {
-        case "image":
-            return translate("settings.generateImage");
-        case "video":
-            return translate("settings.video");
-        case "text":
-            return translate("settings.text");
-        default:
-            return "";
-    }
-}
-
 function ModelLabel({ config, model, showRealName }: { config: AiConfig; model: string; showRealName: boolean }) {
     return (
         <span className="flex min-w-0 items-center gap-2">
@@ -134,7 +118,8 @@ function ModelLabel({ config, model, showRealName }: { config: AiConfig; model: 
     );
 }
 
-function ModelIcon({ config, model }: { config: AiConfig; model: string }) {
+/** 模型图标：优先使用管理端配置的图标，其次按模型名和接口格式自动匹配。 */
+export function ModelIcon({ config, model }: { config: AiConfig; model: string }) {
     const modelName = model ? modelOptionName(model) : "";
     const apiFormat = model ? resolveModelRequestConfig(config, model).apiFormat : undefined;
     const configuredKey = model ? config.modelIcons?.[model] : undefined;

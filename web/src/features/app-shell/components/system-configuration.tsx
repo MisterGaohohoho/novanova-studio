@@ -8,11 +8,11 @@ import { useTranslation } from "@/features/locale/use-translation";
 import { Alert, App, Button, Checkbox, Form, Input, InputNumber, Modal, Select, Space, Switch, Tabs } from "antd";
 import type { TextAreaRef } from "antd/es/input/TextArea";
 import { nanoid } from "nanoid";
-import { Braces, CheckCircle2, ChevronDown, ChevronUp, Clapperboard, CloudUpload, Image, Info, Monitor, Pencil, Plus, RefreshCw, Sparkles, TextCursorInput, Trash2, Video, Wifi } from "lucide-react";
+import { Braces, CheckCircle2, ChevronDown, ChevronUp, Clapperboard, CloudUpload, Copy, Image, Info, Monitor, Pencil, Plus, RefreshCw, Sparkles, TextCursorInput, Trash2, Video, Wifi } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { useUserStore } from "@/features/auth/stores/use-user-store";
-import { ModelPicker } from "@/features/settings/components/model-picker";
+import { ModelIcon } from "@/features/settings/components/model-picker";
 import { MODEL_ICON_OPTIONS } from "@/features/settings/components/model-icon";
 import { createModelCapabilityOptions,
     configFromModelConfigs,
@@ -20,11 +20,12 @@ import { createModelCapabilityOptions,
     createObjectStorageConfig,
     defaultBaseUrlForApiFormat,
     MODEL_CAPABILITY_OPTIONS,
+    modelOptionChannel,
     modelOptionLabelWithRealName,
     normalizeModelOptionValue,
     useConfigStore,
+    type AiConfig,
     type ApiCallFormat,
-    type ConfigDialogTabKey,
     type CustomModelGroupConfig,
     type ModelCapability,
     type ModelChannel,
@@ -32,7 +33,7 @@ import { createModelCapabilityOptions,
     type VideoGenerationMode,
     type VideoResolution,
 } from "@/features/settings/stores/use-config-store";
-import { createVideoGenerationCapabilityOptions, VIDEO_RESOLUTION_OPTIONS, createVideoBillingConfiguration } from "@/features/generation/lib/video-billing";
+import { createVideoGenerationCapabilityOptions, VIDEO_GENERATION_CAPABILITY_OPTIONS, VIDEO_RESOLUTION_OPTIONS, createVideoBillingConfiguration } from "@/features/generation/lib/video-billing";
 import { isObjectStorageReady, objectStorageReadyMessage, testObjectStorageUpload } from "@/features/storage/services/object-storage";
 import { isOpenAiTextModel, isReasoningEffortDisabled, reasoningEffortOptions } from "@/features/settings/lib/model-thinking-configuration";
 import {
@@ -58,6 +59,18 @@ import {
 } from "@/services/api/server";
 import type { ObjectStorageConfig, ObjectStorageProvider } from "@/shared/types/object-storage";
 import { blockingModelConfigDependencyIssues, createDraftModelConfigs, modelConfigDependencyIssues, reconcileModelConfigDraft, updateModelConfigSelection } from "./model-config-draft";
+import { cloneImageSizeMappings, IMAGE_RESOLUTIONS, normalizeImageSizeMappings, type ImageResolution, type ImageSizeMappings } from "@/features/generation/lib/image-size-mappings";
+import { ImageSizeMappingsEditor } from "./image-size-mappings-editor";
+import { ModelSelectModal, type ChannelModelGroup } from "./model-select-modal";
+import { ModelConfigCopyModal } from "./model-config-copy-modal";
+import { applyCustomConfigCopy } from "./model-config-copy";
+import type { CustomGroupField, CustomModelMode } from "./model-config-copy";
+import { ModelConfigAutoFillModal } from "./model-config-auto-fill-modal";
+import { VideoGenerationConstraintsEditor } from "./video-generation-constraints-editor";
+import { videoConstraintConfigurationIssues } from "@/features/generation/lib/video-generation-constraints";
+import { useConfigurationLeaveGuard } from "./use-configuration-leave-guard";
+
+type ConfigurationTabKey = "channels" | "models" | "credits" | "invitationReward" | "checkIn" | "objectStorage";
 
 type ModelGroup = {
     capability: ModelCapability;
@@ -143,23 +156,21 @@ const createObjectStorageProviderFields = (translator: typeof translate = transl
     },
 });
 
-export function AppConfigModal() {
+export function SystemConfiguration() {
     const translate = useTranslation();
     const { message, modal } = App.useApp();
     const user = useUserStore((state) => state.user);
     const config = useConfigStore((state) => state.config);
     const modelConfigs = useConfigStore((state) => state.modelConfigs);
     const objectStorages = useConfigStore((state) => state.objectStorages);
-    const isConfigOpen = useConfigStore((state) => state.isConfigOpen);
-    const configDialogTab = useConfigStore((state) => state.configDialogTab);
-    const setConfigDialogTab = useConfigStore((state) => state.setConfigDialogTab);
-    const setConfigDialogOpen = useConfigStore((state) => state.setConfigDialogOpen);
     const refreshChannels = useConfigStore((state) => state.refreshChannels);
     const refreshModelConfiguration = useConfigStore((state) => state.refreshModelConfiguration);
     const refreshObjectStorages = useConfigStore((state) => state.refreshObjectStorages);
-    const [activeTab, setActiveTab] = useState<ConfigDialogTabKey>("channels");
+    const [activeTab, setActiveTab] = useState<ConfigurationTabKey>("channels");
     const [draftsReady, setDraftsReady] = useState(false);
-    const [savingTab, setSavingTab] = useState<ConfigDialogTabKey | "">("");
+    const [loadError, setLoadError] = useState("");
+    const [loadAttempt, setLoadAttempt] = useState(0);
+    const [savingTab, setSavingTab] = useState<ConfigurationTabKey | "">("");
     const [loadingChannelId, setLoadingChannelId] = useState("");
     const [refreshingObjectStorages, setRefreshingObjectStorages] = useState(false);
     const [testingObjectStorageId, setTestingObjectStorageId] = useState("");
@@ -181,9 +192,11 @@ export function AppConfigModal() {
     const [checkInBaseline, setCheckInBaseline] = useState(0);
     const [draftCheckInCredits, setDraftCheckInCredits] = useState(0);
     const [editingModelConfig, setEditingModelConfig] = useState<ServerModelConfig | null>(null);
+    const [modelPicker, setModelPicker] = useState<{ capability: ModelCapability; mode: "options" | "default" } | null>(null);
     const [editingCustomBodyParameters, setEditingCustomBodyParameters] = useState("{}");
     const [collapsedEditingCapabilities, setCollapsedEditingCapabilities] = useState<string[]>([]);
-    const initializedRef = useRef(false);
+    const [modelConfigCopyTarget, setModelConfigCopyTarget] = useState<ServerModelConfig | null>(null);
+    const [autoFillConfigMode, setAutoFillConfigMode] = useState<VideoGenerationMode | null>(null);
     const editingModelIsMedia = Boolean(editingModelConfig && (editingModelConfig.modelType === "image" || editingModelConfig.modelType === "video"));
 
     const resetChannelDraft = useCallback((resetCollapsed = false) => {
@@ -216,18 +229,9 @@ export function AppConfigModal() {
     }, [resetChannelDraft, resetModelConfigDraft, resetObjectStorageDraft]);
 
     useEffect(() => {
-        if (isConfigOpen) setActiveTab(configDialogTab);
-    }, [configDialogTab, isConfigOpen]);
-
-    useEffect(() => {
-        if (!isConfigOpen) {
-            initializedRef.current = false;
-            setDraftsReady(false);
-            return;
-        }
-        if (initializedRef.current) return;
-        initializedRef.current = true;
+        if (user?.role !== "admin") return;
         setDraftsReady(false);
+        setLoadError("");
         let active = true;
         void Promise.all([refreshModelConfiguration(), refreshObjectStorages(), getCreditSettings(), getInvitationRewardSettings(), getCheckInRewardSettings()])
             .then(([, , creditSettings, invitationRewardSettings, checkInSettings]) => {
@@ -241,19 +245,14 @@ export function AppConfigModal() {
                 setDraftCheckInCredits(checkInSettings.checkInCredits);
                 setDraftsReady(true);
             })
-            .catch(() => {
+            .catch((error) => {
                 if (!active) return;
-                message.error(translate("appShell.failedToLoadConfiguration"));
-                setDraftsReady(true);
+                setLoadError(error instanceof Error ? error.message : translate("appShell.failedToLoadConfiguration"));
             });
         return () => {
             active = false;
         };
-    }, [isConfigOpen, message, refreshModelConfiguration, refreshObjectStorages, resetAllDrafts]);
-
-    useEffect(() => {
-        if (user?.role !== "admin" && isConfigOpen) setConfigDialogOpen(false);
-    }, [isConfigOpen, setConfigDialogOpen, user?.role]);
+    }, [loadAttempt, user?.role, refreshModelConfiguration, refreshObjectStorages, resetAllDrafts]);
 
     const draftConfig = useMemo(() => {
         const nextConfig = configFromModelConfigs(draftChannels, draftModelConfigs, config);
@@ -262,15 +261,26 @@ export function AppConfigModal() {
         return nextConfig;
     }, [config, draftChannels, draftModelConfigs, translate.locale]);
     const dependencyIssues = useMemo(() => modelConfigDependencyIssues(channelBaseline, draftModelConfigs), [channelBaseline, draftModelConfigs, translate.locale]);
-    const modelOptions = useMemo(() => uniqueModels([...draftConfig.models, ...draftModelConfigs.map(modelConfigValue)]).map((model) => ({ label: modelOptionLabelWithRealName(draftConfig, model), value: model })), [draftConfig, draftModelConfigs, translate.locale]);
+    // 「我的模型」的模型选择走弹窗：左侧渠道、右侧该渠道的模型。
+    const modelGroups = useMemo(() => createChannelModelGroups(draftConfig, uniqueModels([...draftConfig.models, ...draftModelConfigs.map(modelConfigValue)]), translate), [draftConfig, draftModelConfigs, translate.locale]);
+    const capabilityModelGroups = useMemo(
+        () => new Map(createModelGroups(translate).map((group) => [group.capability, createChannelModelGroups(draftConfig, draftConfig[group.modelsKey], translate)])),
+        [draftConfig, translate.locale],
+    );
+    const modelPickerGroup = modelPicker ? createModelGroups(translate).find((group) => group.capability === modelPicker.capability) : undefined;
+    const modelPickerGroups: ChannelModelGroup[] = !modelPicker || !modelPickerGroup ? [] : modelPicker.mode === "options" ? modelGroups : capabilityModelGroups.get(modelPicker.capability) || [];
+    const modelPickerValues = !modelPicker || !modelPickerGroup ? [] : modelPicker.mode === "options" ? draftConfig[modelPickerGroup.modelsKey] : draftConfig[modelPickerGroup.modelKey] ? [draftConfig[modelPickerGroup.modelKey]] : [];
     const channelsDirty = !sameValue(draftChannels, channelBaseline);
     const modelConfigsDirty = !sameValue(draftModelConfigs, modelConfigBaseline);
     const objectStoragesDirty = !sameValue(draftObjectStorages, objectStorageBaseline);
     const creditsDirty = draftInitialCredits !== creditBaseline;
     const invitationRewardDirty = draftInvitationRewardCredits !== invitationRewardBaseline;
     const checkInDirty = draftCheckInCredits !== checkInBaseline;
-    const hasUnsavedChanges = channelsDirty || modelConfigsDirty || objectStoragesDirty || creditsDirty || invitationRewardDirty || checkInDirty;
+    const editingModelBaseline = editingModelConfig && draftModelConfigs.find((item) => item.id === editingModelConfig.id);
+    const modelEditorDirty = Boolean(editingModelConfig && (!sameValue(editingModelConfig, editingModelBaseline) || editingCustomBodyParameters !== JSON.stringify(editingModelBaseline?.customBodyParameters || {}, null, 2)));
+    const hasUnsavedChanges = channelsDirty || modelConfigsDirty || objectStoragesDirty || creditsDirty || invitationRewardDirty || checkInDirty || modelEditorDirty;
     const isSaving = Boolean(savingTab);
+    useConfigurationLeaveGuard(draftsReady && hasUnsavedChanges);
 
     const updateDraftChannel = (id: string, patch: Partial<ModelChannel>) => {
         setDraftChannels((channels) => channels.map((channel) => (channel.id === id ? { ...channel, ...patch, models: patch.models ? uniqueModels(patch.models) : channel.models } : channel)));
@@ -367,15 +377,17 @@ export function AppConfigModal() {
         const values = uniqueModels(models.map((model) => normalizeModelOptionValue(model, draftChannels)).filter(Boolean));
         if (values.some((value) => !value.includes("::"))) {
             message.warning(translate("appShell.addModelsInMyChannelsBeforeConfiguringOptions"));
-            return;
+            return false;
         }
         setDraftModelConfigs((configs) => updateModelConfigSelection(configs, modelConfigBaseline, group.capability, values, createDraftModelConfig));
+        return true;
     };
 
     const openModelConfigEditor = (configItem: ServerModelConfig) => {
         setEditingModelConfig(cloneModelConfig(configItem));
         setEditingCustomBodyParameters(JSON.stringify(configItem.customBodyParameters || {}, null, 2));
-        setCollapsedEditingCapabilities([]);
+        setCollapsedEditingCapabilities(defaultCollapsedEditingCapabilities(configItem));
+        setModelConfigCopyTarget(null);
     };
 
     const toggleEditingCapabilityCollapsed = (capability: string) => {
@@ -386,13 +398,58 @@ export function AppConfigModal() {
         setEditingModelConfig((configItem) => (configItem ? { ...configItem, ...patch } : configItem));
     };
 
+    /** 从其他同类型自定义模型复制指定模式的调用配置，覆盖目标已有内容。 */
+    const copyCustomConfigFromModel = (source: ServerModelConfig, modes: CustomModelMode[]) => {
+        if (!modelConfigCopyTarget) return;
+        const { config: nextConfig, copiedModes } = applyCustomConfigCopy(modelConfigCopyTarget, source, modes);
+        if (!copiedModes.length) return;
+        // 编辑弹窗持有独立副本，复制结果要同步过去，否则点击确定会被旧值覆盖。
+        if (editingModelConfig && editingModelConfig.id === nextConfig.id) {
+            setEditingModelConfig(nextConfig);
+        }
+        setDraftModelConfigs((configs) => configs.map((configItem) => (configItem.id === nextConfig.id ? nextConfig : configItem)));
+        setModelConfigCopyTarget(null);
+        message.success(translate("appShell.copiedCustomConfig", { value0: copiedModes.length }));
+    };
+
+    /** 用同一模型的其他模式补全当前模式的空字段，已有内容保持不变。 */
+    const autoFillCustomConfig = (nextConfig: ServerModelConfig, filledFields: CustomGroupField[]) => {
+        setEditingModelConfig(nextConfig);
+        setAutoFillConfigMode(null);
+        if (filledFields.length) message.success(translate("appShell.autoFilledFields", { value0: filledFields.length }));
+    };
+
+    /** 图片分辨率价格留空表示该档位沿用模型单价。 */
+    const updateImageResolutionPrice = (resolution: ImageResolution, value: number | null) => {
+        setEditingModelConfig((configItem) => {
+            if (!configItem) return configItem;
+            const resolutionPrices = { ...(configItem.imageBillingConfiguration?.resolutionPrices || {}) };
+            if (value === null) delete resolutionPrices[resolution];
+            else resolutionPrices[resolution] = value;
+            return { ...configItem, imageBillingConfiguration: Object.keys(resolutionPrices).length ? { resolutionPrices } : null };
+        });
+    };
+
     const saveModelConfigEditor = () => {
         if (!editingModelConfig) return;
+        const issue = customVideoConfigurationIssue(editingModelConfig);
+        if (issue) {
+            setCollapsedEditingCapabilities((current) => current.filter((key) => key !== `video:${issue.mode}`));
+            message.error(issue.message);
+            requestAnimationFrame(() => {
+                const section = document.querySelector<HTMLElement>(`[data-video-constraints="${issue.mode}"]`);
+                section?.scrollIntoView({ block: "center", behavior: "smooth" });
+                section?.querySelector<HTMLElement>(`[id="${issue.mode}-${issue.field}"]`)?.focus();
+            });
+            return;
+        }
         let customBodyParameters: Record<string, unknown>;
+        let imageSizeMappings: ImageSizeMappings | null;
         try {
             const parsed = JSON.parse(editingCustomBodyParameters.trim() || "{}");
             if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error(translate("appShell.customModelJSONMustBeAnObject"));
             customBodyParameters = parsed as Record<string, unknown>;
+            imageSizeMappings = editingModelConfig.modelType === "image" ? normalizeImageSizeMappings(editingModelConfig.imageSizeMappings) : null;
         } catch (error) {
             message.error(error instanceof Error ? error.message : translate("appShell.invalidCustomModelJSON"));
             return;
@@ -400,10 +457,12 @@ export function AppConfigModal() {
         const nextConfig = {
             ...editingModelConfig,
             customBodyParameters,
+            imageSizeMappings,
             displayName: editingModelConfig.displayName === editingModelConfig.modelName ? null : editingModelConfig.displayName,
         };
         setDraftModelConfigs((configs) => configs.map((configItem) => (configItem.id === nextConfig.id ? nextConfig : configItem)));
         setEditingModelConfig(null);
+        setModelConfigCopyTarget(null);
     };
 
     const formatEditingCustomBodyParameters = () => {
@@ -424,7 +483,30 @@ export function AppConfigModal() {
         setDraftModelConfigs((configs) => configs.map((configItem) => (configItem.modelType === modelType ? { ...configItem, defaultModel: modelConfigValue(configItem) === model } : configItem)));
     };
 
+    const confirmModelPicker = (values: string[]) => {
+        if (!modelPicker || !modelPickerGroup) return;
+        if (modelPicker.mode === "options") {
+            // 依赖失效的模型会被拒绝，保留弹窗让用户取消勾选。
+            if (!updateCapabilityModels(modelPickerGroup, values)) return;
+        } else {
+            setDefaultDraftModel(modelPicker.capability, values[0] || "");
+        }
+        setModelPicker(null);
+    };
+
+    /** 弹窗里已存在的模型配置可以直接打开配置弹窗编辑，未保存的模型先确认加入再配置。 */
+    const configurePickedModel = (model: string) => {
+        const configItem = draftModelConfigs.find((item) => item.modelType === modelPicker?.capability && modelConfigValue(item) === model);
+        if (configItem) openModelConfigEditor(configItem);
+    };
+
     const saveModelConfigs = async () => {
+        const invalid = draftModelConfigs.find((configuration) => customVideoConfigurationIssue(configuration));
+        if (invalid) {
+            openModelConfigEditor(invalid);
+            message.error(customVideoConfigurationIssue(invalid)!.message);
+            return;
+        }
         const baselineById = new Map(modelConfigBaseline.map((configItem) => [configItem.id, configItem]));
         // 未修改的旧失效配置不阻塞其他模型，新增、修改或设置默认时仍必须校验依赖。
         const blockingIssues = blockingModelConfigDependencyIssues(channelBaseline, draftModelConfigs, modelConfigBaseline, sameModelConfigForUpdate);
@@ -449,8 +531,11 @@ export function AppConfigModal() {
                     thinkingEnabled: normalizedConfig.thinkingEnabled,
                     reasoningEffort: normalizedConfig.reasoningEffort,
                     requestConcurrency: normalizedConfig.requestConcurrency,
+                    convertImageSizeToPixels: normalizedConfig.convertImageSizeToPixels,
+                    imageSizeMappings: normalizedConfig.imageSizeMappings,
                     customBodyParameters: normalizedConfig.customBodyParameters,
                     videoBillingConfiguration: normalizedConfig.videoBillingConfiguration,
+                    imageBillingConfiguration: normalizedConfig.imageBillingConfiguration,
                     displayName: normalizedConfig.displayName,
                     modelIcon: normalizedConfig.modelIcon,
                     isCustomModel: normalizedConfig.isCustomModel,
@@ -476,8 +561,11 @@ export function AppConfigModal() {
                         thinkingEnabled: normalizedConfig.thinkingEnabled,
                         reasoningEffort: normalizedConfig.reasoningEffort,
                         requestConcurrency: normalizedConfig.requestConcurrency,
+                        convertImageSizeToPixels: normalizedConfig.convertImageSizeToPixels,
+                        imageSizeMappings: normalizedConfig.imageSizeMappings,
                         customBodyParameters: normalizedConfig.customBodyParameters,
                         videoBillingConfiguration: normalizedConfig.videoBillingConfiguration,
+                        imageBillingConfiguration: normalizedConfig.imageBillingConfiguration,
                         displayName: normalizedConfig.displayName,
                         modelIcon: normalizedConfig.modelIcon,
                         isCustomModel: normalizedConfig.isCustomModel,
@@ -712,31 +800,14 @@ export function AppConfigModal() {
     };
 
     const changeActiveTab = (tabKey: string) => {
-        const nextTab = tabKey as ConfigDialogTabKey;
-        setActiveTab(nextTab);
-        setConfigDialogTab(nextTab);
-    };
-
-    const closeConfigDialog = () => {
-        if (!hasUnsavedChanges) {
-            setConfigDialogOpen(false);
-            return;
-        }
-        modal.confirm({
-            title: translate("appShell.discardUnsavedChanges"),
-            content: translate("appShell.closingWillDiscardUnsavedChangesInAllTabs"),
-            okText: translate("appShell.discardChanges"),
-            okType: "danger",
-            cancelText: translate("appShell.continueEditing"),
-            onOk: () => setConfigDialogOpen(false),
-        });
+        setActiveTab(tabKey as ConfigurationTabKey);
     };
 
     if (user?.role !== "admin") return null;
 
     return (
-        <Modal title={<div className="text-lg font-semibold">{translate("appShell.configurationPreferences")}</div>} open={isConfigOpen} width={980} centered onCancel={closeConfigDialog} footer={null} styles={{ body: { height: "72vh", overflowY: "auto", paddingRight: 12 } }}>
-            {!draftsReady ? (
+        <div className="min-w-0">
+            {loadError ? <Alert type="error" showIcon title={loadError} action={<Button onClick={() => setLoadAttempt((attempt) => attempt + 1)}>{translate("appShell.retryConfiguration")}</Button>} /> : !draftsReady ? (
                 <div className="flex h-40 items-center justify-center text-sm text-[var(--studio-muted)]">{translate("appShell.loadingConfiguration")}</div>
             ) : (
                 <Tabs
@@ -857,16 +928,14 @@ export function AppConfigModal() {
                                     <div className="grid gap-4 md:grid-cols-2">
                                         {createModelGroups(translate).map((group) => (
                                             <Form.Item key={group.modelsKey} label={group.optionsLabel} className="mb-0">
-                                                <Select
-                                                    mode="tags"
-                                                    showSearch
-                                                    allowClear
-                                                    maxTagCount="responsive"
+                                                <ModelFieldTrigger
+                                                    config={draftConfig}
+                                                    models={draftConfig[group.modelsKey]}
+                                                    multiple
                                                     placeholder={draftConfig.models.length ? translate("appShell.selectOrEnter", { value0: group.optionsLabel }) : translate("appShell.enterOrFetchChannelModelsFirst")}
-                                                    value={draftConfig[group.modelsKey]}
-                                                    options={modelOptions}
+                                                    actionLabel={translate("appShell.selectModels")}
                                                     disabled={isSaving}
-                                                    onChange={(models) => updateCapabilityModels(group, models)}
+                                                    onOpen={() => setModelPicker({ capability: group.capability, mode: "options" })}
                                                 />
                                             </Form.Item>
                                         ))}
@@ -874,9 +943,14 @@ export function AppConfigModal() {
                                     <div className="mt-4 grid gap-4 md:grid-cols-2 xl:grid-cols-4">
                                         {createModelGroups(translate).map((group) => (
                                             <Form.Item key={group.modelKey} label={group.defaultLabel} className="mb-0">
-                                                <div className={isSaving ? "pointer-events-none opacity-60" : ""}>
-                                                    <ModelPicker config={draftConfig} value={draftConfig[group.modelKey]} onChange={(model) => setDefaultDraftModel(group.capability, model)} capability={group.capability} fullWidth showRealName />
-                                                </div>
+                                                <ModelFieldTrigger
+                                                    config={draftConfig}
+                                                    models={draftConfig[group.modelKey] ? [draftConfig[group.modelKey]] : []}
+                                                    placeholder={translate("settings.selectModel")}
+                                                    actionLabel={translate("appShell.selectModels")}
+                                                    disabled={isSaving}
+                                                    onOpen={() => setModelPicker({ capability: group.capability, mode: "default" })}
+                                                />
                                             </Form.Item>
                                         ))}
                                     </div>
@@ -1141,6 +1215,19 @@ export function AppConfigModal() {
                     ]}
                 />
             )}
+            {modelPicker && modelPickerGroup ? (
+                <ModelSelectModal
+                    config={draftConfig}
+                    title={modelPicker.mode === "options" ? modelPickerGroup.optionsLabel : modelPickerGroup.defaultLabel}
+                    groups={modelPickerGroups}
+                    value={modelPickerValues}
+                    multiple={modelPicker.mode === "options"}
+                    configurableValues={draftModelConfigs.filter((item) => item.modelType === modelPicker.capability).map(modelConfigValue)}
+                    onConfigure={configurePickedModel}
+                    onCancel={() => setModelPicker(null)}
+                    onConfirm={confirmModelPicker}
+                />
+            ) : null}
             <Modal
                 title={
                     editingModelConfig ? (
@@ -1161,6 +1248,8 @@ export function AppConfigModal() {
                 }
                 open={Boolean(editingModelConfig)}
                 centered
+                // 从模型选择弹窗里打开配置时叠在弹窗之上。
+                zIndex={modelPicker ? 1200 : undefined}
                 width={editingModelConfig?.modelType === "video" ? 980 : 760}
                 destroyOnHidden
                 okText={translate("appShell.confirm")}
@@ -1263,14 +1352,28 @@ export function AppConfigModal() {
                                     </div>
                                     <p className="mt-1 text-xs text-[var(--studio-muted)]">{translate("appShell.configureCapabilitiesAndCreditPricesByResolution")}</p>
                                 </div>
-                                <span className="rounded-md border border-[var(--studio-line)] px-2.5 py-1 text-xs text-[var(--studio-muted)]">
-                                    {translate("appShell.pricing")}{editingModelConfig.videoBillingConfiguration?.billingUnit === "second" ? translate("appShell.creditsS") : translate("appShell.creditsRun")}
-                                </span>
+                                <div className="flex flex-wrap items-center gap-2">
+                                    {editingModelConfig.isCustomModel ? (
+                                        <Button size="small" icon={<Copy className="size-3.5" />} disabled={isSaving} onClick={() => setModelConfigCopyTarget(editingModelConfig)}>
+                                            {translate("appShell.copyConfig")}
+                                        </Button>
+                                    ) : null}
+                                    <span className="rounded-md border border-[var(--studio-line)] px-2.5 py-1 text-xs text-[var(--studio-muted)]">
+                                        {translate("appShell.pricing")}{editingModelConfig.videoBillingConfiguration?.billingUnit === "second" ? translate("appShell.creditsS") : translate("appShell.creditsRun")}
+                                    </span>
+                                </div>
                             </div>
                             <div className="space-y-4">
                                 <div className="flex items-center justify-between gap-3 rounded-lg border border-[var(--studio-line)] p-4">
                                     <div><div className="font-medium">{translate("appShell.audioInputSupported")}</div><p className="text-xs text-[var(--studio-muted)]">{translate("appShell.allowAudioReferencesForThisVideoModelUniversalReference")}</p></div>
-                                    <Switch aria-label={translate("appShell.audioInputSupported")} checked={editingModelConfig.capabilities.includes("audio-input")} disabled={isSaving || !editingModelConfig.capabilities.includes("audio-input") && !editingModelConfig.capabilities.includes("reference-to-video")} onChange={(checked) => setEditingModelConfig({ ...editingModelConfig, capabilities: checked ? uniqueModels([...editingModelConfig.capabilities, "audio-input"]) : editingModelConfig.capabilities.filter((value) => value !== "audio-input") })} />
+                                    <Switch aria-label={translate("appShell.audioInputSupported")} checked={editingModelConfig.capabilities.includes("audio-input")} disabled={isSaving || !editingModelConfig.capabilities.includes("audio-input") && !editingModelConfig.capabilities.includes("reference-to-video")} onChange={(checked) => {
+                                        const group = editingModelConfig.customModelConfig?.["reference-to-video"];
+                                        setEditingModelConfig({
+                                            ...editingModelConfig,
+                                            capabilities: checked ? uniqueModels([...editingModelConfig.capabilities, "audio-input"]) : editingModelConfig.capabilities.filter((value) => value !== "audio-input"),
+                                            ...(editingModelConfig.isCustomModel && group ? { customModelConfig: { ...editingModelConfig.customModelConfig, "reference-to-video": { ...group, videoGenerationConstraints: { ...group.videoGenerationConstraints, maximumAudioCount: checked ? undefined : 0 } } } } : {}),
+                                        });
+                                    }} />
                                 </div>
                                 {createVideoGenerationCapabilityOptions(translate).map((mode, index) => {
                                     const prices = editingModelConfig.videoBillingConfiguration?.modePrices?.[mode.value] || {};
@@ -1349,11 +1452,25 @@ export function AppConfigModal() {
                                                     ))}
                                                 </div>
                                             </div>}
+                                            {modeCollapsed || !modeEnabled || !editingModelConfig.isCustomModel ? null : <div>
+                                                <div className="mt-3 flex items-center justify-between gap-3">
+                                                    <span className="text-sm font-semibold">{translate("appShell.videoConstraintSection")}</span>
+                                                    <AutoFillButton onClick={() => setAutoFillConfigMode(mode.value)} />
+                                                </div>
+                                                <VideoGenerationConstraintsEditor
+                                                    mode={mode.value}
+                                                    constraints={editingModelConfig.customModelConfig?.[mode.value]?.videoGenerationConstraints}
+                                                    audioEnabled={editingModelConfig.capabilities.includes("audio-input")}
+                                                    billingMinimum={editingModelConfig.videoBillingConfiguration?.minimumDurationSeconds || 1}
+                                                    onChange={(videoGenerationConstraints) => updateEditingModelConfig({ customModelConfig: { ...editingModelConfig.customModelConfig, [mode.value]: { ...emptyCustomModelGroup(), ...editingModelConfig.customModelConfig?.[mode.value], videoGenerationConstraints } } })}
+                                                />
+                                            </div>}
                                             {modeCollapsed ? null : editingModelConfig.isCustomModel ? (
                                                 <CustomModelGroupEditor
                                                     label={mode.label}
                                                     group={editingModelConfig.customModelConfig?.[mode.value]}
                                                     isVideo
+                                                    onAutoFill={() => setAutoFillConfigMode(mode.value)}
                                                     onChange={(group) =>
                                                         updateEditingModelConfig({
                                                             customModelConfig: { ...(editingModelConfig.customModelConfig || {}), [mode.value]: group },
@@ -1436,9 +1553,35 @@ export function AppConfigModal() {
                                 <InputNumber min={1} precision={0} value={editingModelConfig.requestConcurrency} className="w-full" onChange={(value) => updateEditingModelConfig({ requestConcurrency: Math.max(1, Math.floor(Number(value) || 1)) })} />
                             </Form.Item>
                         ) : null}
+                        {editingModelConfig.modelType === "image" ? (
+                            <Form.Item
+                                label={translate("appShell.convertImageSizeToPixels")}
+                                htmlFor="convert-image-size-to-pixels"
+                                extra={<span id="convert-image-size-to-pixels-description">{translate("appShell.convertImageSizeToPixelsDescription")}</span>}
+                            >
+                                <Switch
+                                    id="convert-image-size-to-pixels"
+                                    aria-label={translate("appShell.convertImageSizeToPixels")}
+                                    aria-describedby="convert-image-size-to-pixels-description"
+                                    checked={Boolean(editingModelConfig.convertImageSizeToPixels)}
+                                    onChange={(checked) => updateEditingModelConfig({ convertImageSizeToPixels: checked })}
+                                />
+                            </Form.Item>
+                        ) : null}
+                        {editingModelConfig.modelType === "image" && editingModelConfig.convertImageSizeToPixels ? (
+                            <Form.Item>
+                                <ImageSizeMappingsEditor value={editingModelConfig.imageSizeMappings ?? cloneImageSizeMappings()}
+                                    onChange={(imageSizeMappings) => updateEditingModelConfig({ imageSizeMappings })} />
+                            </Form.Item>
+                        ) : null}
                         <Form.Item label={translate("appShell.capabilities")}>
                             {editingModelConfig.modelType === "image" && editingModelConfig.isCustomModel ? (
                                 <div className="space-y-3">
+                                    <div className="flex flex-wrap items-center justify-end gap-2">
+                                        <Button size="small" icon={<Copy className="size-3.5" />} disabled={isSaving} onClick={() => setModelConfigCopyTarget(editingModelConfig)}>
+                                            {translate("appShell.copyConfig")}
+                                        </Button>
+                                    </div>
                                     {createModelCapabilityOptions(translate).image.map((option) => (
                                         <div key={option.value} className="rounded-md border border-[var(--studio-line)] bg-[var(--studio-panel)] p-3">
                                             <div className="flex items-center justify-between gap-3">
@@ -1510,13 +1653,51 @@ export function AppConfigModal() {
                                 </Form.Item>
                             </>
                         ) : null}
+                        {editingModelConfig.modelType === "image" ? (
+                            <div className="rounded-lg border border-[var(--studio-line)] bg-[var(--studio-surface-soft)] p-4">
+                                <div className="text-sm font-semibold">{translate("appShell.imageResolutionPricing")}</div>
+                                <div className="mt-1 text-xs leading-5 text-[var(--studio-muted)]">{translate("appShell.imageResolutionPricingHint")}</div>
+                                <div className="mt-3 grid grid-cols-3 gap-3">
+                                    {IMAGE_RESOLUTIONS.map((resolution) => (
+                                        <label key={resolution} className="block">
+                                            <span className="mb-1 block text-xs text-[var(--studio-muted)]">{resolution}</span>
+                                            <InputNumber
+                                                min={0}
+                                                precision={0}
+                                                className="w-full"
+                                                placeholder={translate("appShell.inheritModelUnitPrice")}
+                                                value={editingModelConfig.imageBillingConfiguration?.resolutionPrices?.[resolution]}
+                                                onChange={(value) => updateImageResolutionPrice(resolution, value === null ? null : Math.max(0, Math.floor(Number(value) || 0)))}
+                                            />
+                                        </label>
+                                    ))}
+                                </div>
+                            </div>
+                        ) : null}
                         <Form.Item label={translate("appShell.customJSON")} extra={translate("appShell.mergedOnlyIntoJSONPOSTBodiesDuplicateFieldsOverride")}>
                             <Input.TextArea value={editingCustomBodyParameters} autoSize={{ minRows: 5, maxRows: 12 }} spellCheck={false} onChange={(event) => setEditingCustomBodyParameters(event.target.value)} />
                         </Form.Item>
                     </Form>
                 ) : null}
             </Modal>
-        </Modal>
+            {modelConfigCopyTarget ? (
+                <ModelConfigCopyModal
+                    target={modelConfigCopyTarget}
+                    configs={draftModelConfigs}
+                    config={draftConfig}
+                    onCancel={() => setModelConfigCopyTarget(null)}
+                    onCopy={copyCustomConfigFromModel}
+                />
+            ) : null}
+            {autoFillConfigMode && editingModelConfig ? (
+                <ModelConfigAutoFillModal
+                    config={editingModelConfig}
+                    mode={autoFillConfigMode}
+                    onCancel={() => setAutoFillConfigMode(null)}
+                    onFill={autoFillCustomConfig}
+                />
+            ) : null}
+        </div>
     );
 }
 
@@ -1534,12 +1715,40 @@ function cloneModelConfig(config: ServerModelConfig): ServerModelConfig {
         capabilities: [...config.capabilities],
         customBodyParameters: { ...(config.customBodyParameters || {}) },
         customModelConfig: cloneCustomModelConfig(config.customModelConfig),
+        imageSizeMappings: config.modelType === "image" ? cloneImageSizeMappings(config.imageSizeMappings) : null,
         videoBillingConfiguration: config.modelType === "video" ? cloneVideoBillingConfiguration(config.videoBillingConfiguration || createVideoBillingConfiguration()) : null,
+        imageBillingConfiguration: config.modelType === "image" && config.imageBillingConfiguration
+            ? { resolutionPrices: { ...(config.imageBillingConfiguration.resolutionPrices || {}) } }
+            : null,
     };
 }
 
 function cloneCustomModelConfig(config: ServerModelConfig["customModelConfig"] | null | undefined): ServerModelConfig["customModelConfig"] {
-    return Object.fromEntries(Object.entries(config || {}).map(([key, group]) => [key, { ...group }]));
+    return structuredClone(config || {});
+}
+
+/** 校验全部启用的自定义视频模式，保留模式与字段便于定位。 */
+function customVideoConfigurationIssue(config: ServerModelConfig) {
+    if (!config.isCustomModel || config.modelType !== "video") return null;
+    for (const { value: mode } of VIDEO_GENERATION_CAPABILITY_OPTIONS) {
+        if (!config.capabilities.includes(mode)) continue;
+        const issue = videoConstraintConfigurationIssues(mode, config.customModelConfig?.[mode]?.videoGenerationConstraints,
+            config.capabilities.includes("audio-input"), config.videoBillingConfiguration?.minimumDurationSeconds || 1)[0];
+        if (issue) return { mode, ...issue };
+    }
+    return null;
+}
+
+/**
+ * 打开模型配置时默认折叠的能力项。
+ * 视频折叠整个能力卡片（含分辨率价格），图片折叠自定义调用配置编辑器。
+ * 非自定义模型不预置折叠：它没有自定义调用配置，展开更省一次点击。
+ */
+function defaultCollapsedEditingCapabilities(config: ServerModelConfig) {
+    if (!config.isCustomModel) return [];
+    if (config.modelType === "video") return VIDEO_GENERATION_CAPABILITY_OPTIONS.map((option) => `video:${option.value}`);
+    if (config.modelType === "image") return MODEL_CAPABILITY_OPTIONS.image.map((option) => `image:${option.value}`);
+    return [];
 }
 
 function normalizeModelConfigForSave(config: ServerModelConfig): ServerModelConfig {
@@ -1561,9 +1770,21 @@ function normalizeModelConfigForSave(config: ServerModelConfig): ServerModelConf
         ...config,
         capabilities,
         videoBillingConfiguration,
+        imageBillingConfiguration: config.modelType === "image" ? normalizeImageBillingConfiguration(config.imageBillingConfiguration) : null,
         isCustomModel: config.isCustomModel && config.modelType !== "text",
+        convertImageSizeToPixels: config.modelType === "image" && Boolean(config.convertImageSizeToPixels),
+        imageSizeMappings: config.modelType === "image" ? normalizeImageSizeMappings(config.imageSizeMappings) : null,
         customModelConfig,
     };
+}
+
+/** 图片分辨率价目表只保留1K、2K、4K的已填写价格，全空表示沿用模型单价。 */
+function normalizeImageBillingConfiguration(configuration: ServerModelConfig["imageBillingConfiguration"]): ServerModelConfig["imageBillingConfiguration"] {
+    const prices = Object.fromEntries(
+        IMAGE_RESOLUTIONS.map((resolution) => [resolution, configuration?.resolutionPrices?.[resolution]])
+            .filter(([, price]) => typeof price === "number" && Number.isFinite(price)),
+    ) as Record<string, number>;
+    return Object.keys(prices).length ? { resolutionPrices: prices } : null;
 }
 
 function cloneObjectStorages(storages: ObjectStorageConfig[]) {
@@ -1584,8 +1805,11 @@ function createDraftModelConfig(channelId: string, modelName: string, modelType:
         thinkingEnabled: true,
         reasoningEffort: "high",
         requestConcurrency: 1,
+        convertImageSizeToPixels: false,
+        imageSizeMappings: modelType === "image" ? cloneImageSizeMappings() : null,
         customBodyParameters: {},
         videoBillingConfiguration: modelType === "video" ? createVideoBillingConfiguration() : null,
+        imageBillingConfiguration: null,
         displayName: null,
         modelIcon: null,
         isCustomModel: false,
@@ -1604,6 +1828,8 @@ function sameModelConfigForUpdate(first: ServerModelConfig, second: ServerModelC
         first.creditCost === second.creditCost &&
         first.creditUnit === second.creditUnit &&
         first.requestConcurrency === second.requestConcurrency &&
+        first.convertImageSizeToPixels === second.convertImageSizeToPixels &&
+        sameValue(first.imageSizeMappings, second.imageSizeMappings) &&
         first.thinkingEnabled === second.thinkingEnabled &&
         first.reasoningEffort === second.reasoningEffort &&
         (first.displayName || null) === (second.displayName || null) &&
@@ -1612,7 +1838,8 @@ function sameModelConfigForUpdate(first: ServerModelConfig, second: ServerModelC
         sameValue(first.capabilities, second.capabilities) &&
         sameValue(first.customBodyParameters, second.customBodyParameters) &&
         sameValue(first.customModelConfig, second.customModelConfig) &&
-        sameValue(first.videoBillingConfiguration, second.videoBillingConfiguration)
+        sameValue(first.videoBillingConfiguration, second.videoBillingConfiguration) &&
+        sameValue(first.imageBillingConfiguration, second.imageBillingConfiguration)
     );
 }
 
@@ -1647,6 +1874,66 @@ function uniqueModels(models: string[]) {
     return Array.from(new Set(models.map((model) => model.trim()).filter(Boolean)));
 }
 
+/** 按渠道聚合模型，供模型选择弹窗渲染。 */
+function createChannelModelGroups(config: AiConfig, models: string[], translator: typeof translate = translate): ChannelModelGroup[] {
+    const channels = config.channels.map((channel) => ({ channelId: channel.id, channelName: channel.name.trim() || translator("appShell.unnamedChannel"), models: [] as string[] }));
+    const channelsById = new Map(channels.map((channel) => [channel.channelId, channel]));
+    const unassigned: string[] = [];
+    for (const model of models) {
+        const channel = channelsById.get(modelOptionChannel(config, model)?.id || "");
+        if (channel) channel.models.push(model);
+        else unassigned.push(model);
+    }
+    const groups: ChannelModelGroup[] = channels
+        .filter((channel) => channel.models.length)
+        .map((channel) => ({ channelId: channel.channelId, channelName: channel.channelName, models: channel.models.map((model) => ({ value: model, label: modelOptionLabelWithRealName(config, model, false) })) }));
+    if (unassigned.length) {
+        groups.push({ channelId: "", channelName: translator("appShell.noChannelModels"), models: unassigned.map((model) => ({ value: model, label: modelOptionLabelWithRealName(config, model, false) })) });
+    }
+    return groups;
+}
+
+/** 模型选择弹窗的触发器：展示已选模型，点击按钮打开弹窗。 */
+function ModelFieldTrigger({ config, models, multiple = false, placeholder, actionLabel, disabled, onOpen }: {
+    config: AiConfig;
+    models: string[];
+    multiple?: boolean;
+    placeholder: string;
+    actionLabel: string;
+    disabled: boolean;
+    onOpen: () => void;
+}) {
+    return (
+        <div className="flex min-h-8 items-center gap-2 rounded-md border border-[var(--studio-line)] bg-[var(--studio-panel)] px-2 py-1">
+            <div className="flex min-w-0 flex-1 items-center gap-1 overflow-hidden">
+                {!models.length ? (
+                    <span className="truncate text-sm text-[var(--studio-muted)]">{placeholder}</span>
+                ) : multiple ? (
+                    <>
+                        {models.slice(0, 2).map((model) => (
+                            <span key={model} className="max-w-[8.5rem] shrink-0 truncate rounded bg-[var(--studio-surface-hover)] px-1.5 py-0.5 text-xs text-[var(--studio-text)]">{modelOptionLabelWithRealName(config, model)}</span>
+                        ))}
+                        {models.length > 2 ? <span className="shrink-0 text-xs text-[var(--studio-muted)]">+{models.length - 2}</span> : null}
+                    </>
+                ) : (
+                    <ModelOptionLabel config={config} model={models[0]} showChannel />
+                )}
+            </div>
+            <Button size="small" disabled={disabled} onClick={onOpen}>{actionLabel}</Button>
+        </div>
+    );
+}
+
+/** 模型展示：图标 + 展示名，渠道后缀在关闭态展示。 */
+function ModelOptionLabel({ config, model, showChannel = false }: { config: AiConfig; model: string; showChannel?: boolean }) {
+    return (
+        <span className="flex min-w-0 items-center gap-2">
+            <ModelIcon config={config} model={model} />
+            <span className="truncate">{modelOptionLabelWithRealName(config, model, showChannel)}</span>
+        </span>
+    );
+}
+
 /** 空的自定义模型分组配置。 */
 function emptyCustomModelGroup(): CustomModelGroupConfig {
     return {
@@ -1658,7 +1945,7 @@ function emptyCustomModelGroup(): CustomModelGroupConfig {
         responseExample: "",
         resultPath: "",
         queryPath: "",
-        queryMethod: "POST",
+        queryMethod: "GET",
         queryRequestTemplate: "",
         aiQueryPrompt: "",
         queryResponseExample: "",
@@ -1685,16 +1972,34 @@ const customTemplatePlaceholderOptions = [
     { label: "{{taskId}}", value: "{{taskId}}" },
 ];
 
+/** 查询方法默认 GET，选项顺序与默认值保持一致。 */
+const customQueryMethodOptions = [
+    { value: "GET", label: "GET" },
+    { value: "POST", label: "POST" },
+];
+
+/** 用同一模型的其他模式补全当前模式的空字段。 */
+function AutoFillButton({ onClick }: { onClick: () => void }) {
+    const translate = useTranslation();
+    return (
+        <Button size="small" icon={<Sparkles className="size-3.5" />} onClick={onClick}>
+            {translate("appShell.autoFill")}
+        </Button>
+    );
+}
+
 /** 自定义模型单个能力/模式分组的调用配置编辑器。 */
 function CustomModelGroupEditor({
     label,
     group,
     isVideo,
+    onAutoFill,
     onChange,
 }: {
     label: string;
     group: CustomModelGroupConfig | undefined;
     isVideo: boolean;
+    onAutoFill?: () => void;
     onChange: (group: CustomModelGroupConfig) => void;
 }) {
     const translate = useTranslation();
@@ -1718,7 +2023,10 @@ function CustomModelGroupEditor({
     };
     return (
         <div className="mt-3 space-y-3 rounded-md border border-[var(--studio-line)] bg-[var(--studio-panel)] p-3">
-            <div className="text-xs font-semibold text-[var(--studio-muted)]">{translate("appShell.customAPIConfiguration")}{label}）</div>
+            <div className="flex flex-wrap items-center justify-between gap-2">
+                <div className="text-xs font-semibold text-[var(--studio-muted)]">{translate("appShell.customAPIConfiguration")}{label}）</div>
+                {onAutoFill ? <AutoFillButton onClick={onAutoFill} /> : null}
+            </div>
             <div className="grid gap-3 md:grid-cols-[minmax(0,1fr)_112px]">
                 <div>
                     <div className="mb-1 text-xs text-[var(--studio-muted)]">{translate("appShell.requestPath")}</div>
@@ -1794,7 +2102,7 @@ function CustomModelGroupEditor({
                         </div>
                         <div>
                             <div className="mb-1 text-xs text-[var(--studio-muted)]">{translate("appShell.queryMethod")}</div>
-                            <Select value={current.queryMethod} options={customRequestMethodOptions} className="w-full" onChange={(value: "GET" | "POST") => update({ queryMethod: value })} />
+                            <Select value={current.queryMethod} options={customQueryMethodOptions} className="w-full" onChange={(value: "GET" | "POST") => update({ queryMethod: value })} />
                         </div>
                     </div>
                     {queryIsPost ? (

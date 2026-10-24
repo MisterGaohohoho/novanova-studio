@@ -11,6 +11,8 @@ import { useUserStore } from "@/features/auth/stores/use-user-store";
 import type { ObjectStorageConfig } from "@/shared/types/object-storage";
 
 import { normalizeChannelName } from "../lib/channel-name";
+import { cloneImageSizeMappings } from "@/features/generation/lib/image-size-mappings";
+import type { ImageResolution } from "@/features/generation/lib/image-size-mappings";
 import { refreshModelConfigurationSnapshot } from "../lib/model-configuration-refresh";
 
 export type ApiCallFormat = "openai" | "newapi" | "evolink" | "gemini" | "agnes" | "anthropic" | "seedance" | "minimax" | "custom";
@@ -22,6 +24,20 @@ export type VideoBillingConfiguration = {
     billingUnit: ModelCreditUnit;
     minimumDurationSeconds: number;
     modePrices: Partial<Record<VideoGenerationMode, Partial<Record<VideoResolution, number>>>>;
+};
+/** 图片模型按 1K、2K、4K 清晰度配置的积分单价，空表示沿用模型单价。 */
+export type ImageBillingConfiguration = {
+    resolutionPrices: Partial<Record<ImageResolution, number>>;
+};
+/** 自定义视频模式限制；草稿和未补全配置允许缺失字段，使用前必须统一校验。 */
+export type VideoGenerationConstraints = {
+    minimumDurationSeconds?: number | null;
+    maximumDurationSeconds?: number | null;
+    minimumImageCount?: number | null;
+    maximumImageCount?: number | null;
+    supportedAspectRatios?: string[];
+    maximumVideoCount?: number | null;
+    maximumAudioCount?: number | null;
 };
 /** 自定义模型单能力/模式分组配置。 */
 export type CustomModelGroupConfig = {
@@ -38,11 +54,14 @@ export type CustomModelGroupConfig = {
     aiQueryPrompt: string;
     queryResponseExample: string;
     queryResultPath: string;
+    videoGenerationConstraints?: VideoGenerationConstraints | null;
 };
 export type VideoModelBillingConfiguration = {
     model: string;
     capabilities: string[];
     videoBillingConfiguration: VideoBillingConfiguration | null;
+    isCustomModel?: boolean;
+    videoGenerationConstraints?: Partial<Record<VideoGenerationMode, VideoGenerationConstraints>>;
 };
 export type ModelCapabilityConfig = { model: string; capabilities: string[] };
 
@@ -66,8 +85,6 @@ export const createModelCapabilityOptions = (translator: typeof translate = tran
 });
 
 export const MODEL_CAPABILITY_OPTIONS = createModelCapabilityOptions();
-
-export type ConfigDialogTabKey = "channels" | "models" | "credits" | "invitationReward" | "checkIn" | "objectStorage";
 
 export type ModelChannel = {
     id: string;
@@ -95,7 +112,7 @@ export type AiConfig = {
     videoGenerationMode: VideoGenerationMode;
     systemPrompt: string;
     models: string[];
-    modelCosts: Array<{ model: string; taskType: ModelCapability; credits: number; unit: ModelCreditUnit }>;
+    modelCosts: Array<{ model: string; taskType: ModelCapability; credits: number; unit: ModelCreditUnit; resolutionPrices?: Partial<Record<ImageResolution, number>> }>;
     imageModels: string[];
     videoModels: string[];
     textModels: string[];
@@ -119,9 +136,6 @@ type ConfigStore = {
     objectStorages: ObjectStorageConfig[];
     activeObjectStorageId: string;
     modelConfigs: ServerModelConfig[];
-    isConfigOpen: boolean;
-    configDialogTab: ConfigDialogTabKey;
-    shouldPromptContinue: boolean;
     hydrateConfig: () => Promise<void>;
     updateConfig: <K extends keyof AiConfig>(key: K, value: AiConfig[K]) => void;
     setChannels: (channels: ModelChannel[]) => void;
@@ -132,10 +146,6 @@ type ConfigStore = {
     deleteObjectStorage: (id: string) => void;
     setDefaultObjectStorage: (id: string) => void;
     isAiConfigReady: (config: AiConfig, model: string) => boolean;
-    openConfigDialog: (shouldPromptContinue?: boolean, tabKey?: ConfigDialogTabKey) => void;
-    setConfigDialogTab: (tabKey: ConfigDialogTabKey) => void;
-    setConfigDialogOpen: (isOpen: boolean) => void;
-    clearPromptContinue: () => void;
     refreshChannels: () => Promise<void>;
     refreshModelConfiguration: () => Promise<void>;
     refreshObjectStorages: () => Promise<void>;
@@ -201,9 +211,6 @@ export const useConfigStore = create<ConfigStore>()((set, get) => ({
     objectStorages: [defaultObjectStorage],
     activeObjectStorageId: defaultObjectStorage.id,
     modelConfigs: [],
-    isConfigOpen: false,
-    configDialogTab: "channels",
-    shouldPromptContinue: false,
     hydrateConfig: async () => {
         const user = useUserStore.getState().user;
         if (!user || (get().hydrated && get().hydratedUserId === user.id)) return;
@@ -311,10 +318,6 @@ export const useConfigStore = create<ConfigStore>()((set, get) => ({
         const selectedModel = model || config.model || config.imageModel || config.textModel;
         return Boolean(selectedModel && config.models.includes(normalizeModelOptionValue(selectedModel, config.channels)));
     },
-    openConfigDialog: (shouldPromptContinue = false, tabKey = "channels") => set({ isConfigOpen: true, shouldPromptContinue, configDialogTab: tabKey }),
-    setConfigDialogTab: (configDialogTab) => set({ configDialogTab }),
-    setConfigDialogOpen: (isConfigOpen) => set({ isConfigOpen }),
-    clearPromptContinue: () => set({ shouldPromptContinue: false }),
     refreshChannels: async () => {
         const data = await listChannels();
         set((state) => {
@@ -405,7 +408,7 @@ export function modelOptionLabel(config: AiConfig, model: string) {
 }
 
 /** 管理端「我的模型」页签专用：同时展示展示名与真实模型名，如「（dsf-v4）deepseek-v4-flash（渠道名）」。 */
-export function modelOptionLabelWithRealName(config: AiConfig, model: string) {
+export function modelOptionLabelWithRealName(config: AiConfig, model: string, showChannel = true) {
     const value = model.trim();
     const parsed = parseModelOption(value);
     if (!parsed) return value;
@@ -414,8 +417,14 @@ export function modelOptionLabelWithRealName(config: AiConfig, model: string) {
     const channel = config.channels.find((item) => item.id === parsed.channelId);
     const channelName = channel?.name;
     const displayPrefix = displayName ? `（${displayName}）` : "";
-    const channelSuffix = channelName ? `（${channelName}）` : "";
+    const channelSuffix = showChannel && channelName ? `（${channelName}）` : "";
     return `${displayPrefix}${realName}${channelSuffix}`;
+}
+
+/** 模型选项所属的渠道；没有渠道前缀或渠道已被删除时返回 undefined。 */
+export function modelOptionChannel(config: AiConfig, model: string) {
+    const parsed = parseModelOption(model.trim());
+    return parsed ? config.channels.find((channel) => channel.id === parsed.channelId) : undefined;
 }
 
 export function modelOptionsFromChannels(channels: ModelChannel[]) {
@@ -493,6 +502,10 @@ export function configFromModelConfigs(channels: ModelChannel[], modelConfigs: S
                 model: `${item.channelId}${CHANNEL_MODEL_SEPARATOR}${item.modelName}`,
                 capabilities: item.capabilities,
                 videoBillingConfiguration: item.videoBillingConfiguration || null,
+                isCustomModel: item.isCustomModel,
+                videoGenerationConstraints: Object.fromEntries(Object.entries(item.customModelConfig || {})
+                    .filter(([, group]) => group.videoGenerationConstraints)
+                    .map(([mode, group]) => [mode, group.videoGenerationConstraints!])),
             })),
         modelDisplayNames: Object.fromEntries(
             modelConfigs
@@ -509,6 +522,7 @@ export function configFromModelConfigs(channels: ModelChannel[], modelConfigs: S
             taskType: item.modelType,
             credits: item.creditCost,
             unit: normalizeModelCreditUnit(item.creditUnit, item.modelType),
+            resolutionPrices: item.imageBillingConfiguration?.resolutionPrices,
         })),
     });
 }
@@ -546,6 +560,7 @@ function configFromServerModels(modelList: ServerAiModelList | null) {
             taskType: model.capability as ModelCapability,
             credits: model.creditCost,
             unit: normalizeModelCreditUnit(model.creditUnit, model.capability as ModelCapability),
+            resolutionPrices: model.imageBillingConfiguration?.resolutionPrices,
         })),
         modelCapabilities: models.map((model) => ({ model: model.value, capabilities: model.capabilities || [] })),
         videoModelBillingConfigurations: models
@@ -554,6 +569,8 @@ function configFromServerModels(modelList: ServerAiModelList | null) {
                 model: model.value,
                 capabilities: model.capabilities || [],
                 videoBillingConfiguration: model.videoBillingConfiguration || null,
+                isCustomModel: model.isCustomModel,
+                videoGenerationConstraints: model.videoGenerationConstraints || {},
             })),
         modelDisplayNames: Object.fromEntries(
             models
@@ -651,6 +668,11 @@ export function normalizeServerModelConfig(config: ServerModelConfig): ServerMod
         customModelConfig: config.customModelConfig || {},
         creditUnit: normalizeModelCreditUnit(config.creditUnit, config.modelType),
         requestConcurrency: normalizeModelRequestConcurrency(config.requestConcurrency),
+        convertImageSizeToPixels: config.modelType === "image" && Boolean(config.convertImageSizeToPixels),
+        imageSizeMappings: config.modelType === "image" ? cloneImageSizeMappings(config.imageSizeMappings) : null,
+        imageBillingConfiguration: config.modelType === "image" && config.imageBillingConfiguration
+            ? { resolutionPrices: { ...(config.imageBillingConfiguration.resolutionPrices || {}) } }
+            : null,
     };
 }
 

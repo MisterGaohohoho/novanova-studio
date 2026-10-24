@@ -1,12 +1,14 @@
 
 import { translateMessage as translate } from "@/features/locale/translate";
 import type { AiConfig, VideoBillingConfiguration, VideoGenerationMode, VideoResolution } from "@/features/settings/stores/use-config-store";
+import { readVideoGenerationConstraintIssue } from "./video-generation-constraints";
 
 /** 按调用方语言生成显示文案，业务值保持不变。 */
 export const createVideoGenerationModeOptions = (translator: typeof translate = translate): Array<{ value: VideoGenerationMode; label: string }> => ([
     { value: "text-to-video", get label() { return translator("generation.textToVideo"); } },
     { value: "image-to-video", get label() { return translator("generation.imageToVideo"); } },
     { value: "reference-to-video", get label() { return translator("generation.universalReference"); } },
+    { value: "first-last-frame-to-video", get label() { return translator("generation.nativeFirstAndLastFrames"); } },
 ]);
 
 export const VIDEO_GENERATION_MODE_OPTIONS = createVideoGenerationModeOptions();
@@ -15,7 +17,6 @@ export const VIDEO_GENERATION_MODE_OPTIONS = createVideoGenerationModeOptions();
 /** 按调用方语言生成显示文案，业务值保持不变。 */
 export const createVideoGenerationCapabilityOptions = (translator: typeof translate = translate): Array<{ value: VideoGenerationMode; label: string }> => ([
     ...createVideoGenerationModeOptions(translator),
-    { value: "first-last-frame-to-video", get label() { return translator("generation.nativeFirstAndLastFrames"); } },
 ]);
 
 export const VIDEO_GENERATION_CAPABILITY_OPTIONS = createVideoGenerationCapabilityOptions();
@@ -52,6 +53,7 @@ type VideoGenerationQuoteInput = {
     mode: VideoGenerationMode;
     resolution: string;
     seconds: string | number;
+    size?: string;
     imageReferenceCount?: number;
     audioReferenceCount?: number;
     videoReferenceCount?: number;
@@ -83,6 +85,9 @@ export function quoteVideoGeneration(input: VideoGenerationQuoteInput): VideoGen
     const billing = readVideoModelBillingConfiguration(input.config, input.model);
     if (!input.model || !billing) return { available: false, reason: translate("generation.selectAConfiguredVideoModel") };
     if (!billing.capabilities.includes(input.mode)) return { available: false, reason: translate("generation.selectedVideoModeIsNotConfigured") };
+    const constraintIssue = readVideoGenerationConstraintIssue({ config: input.config, model: input.model, mode: input.mode, size: input.size,
+        seconds: input.seconds, imageCount: input.imageReferenceCount, videoCount: input.videoReferenceCount, audioCount: input.audioReferenceCount, requireReferences: input.requireReferences });
+    if (constraintIssue) return { available: false, reason: constraintIssue };
     const configuration = billing.videoBillingConfiguration;
     if (!configuration) return { available: false, reason: translate("generation.videoTierPricesAreNotConfigured") };
     if (configuration.billingUnit !== "generation" && configuration.billingUnit !== "second") {
@@ -131,6 +136,7 @@ export function videoGenerationReferenceIssue(mode: VideoGenerationMode, imageRe
     if (mode === "text-to-video" && (imageReferenceCount || videoReferenceCount)) return translate("generation.textToVideoCannotIncludeReferences");
     if (mode === "image-to-video" && imageReferenceCount < 1) return translate("generation.imageToVideoNeedsAtLeastOneImage");
     if (mode === "image-to-video" && videoReferenceCount) return translate("generation.imageToVideoCannotIncludeVideoReferences");
+    if (mode === "first-last-frame-to-video" && (imageReferenceCount !== 2 || videoReferenceCount)) return translate("generation.videoConstraintImageModeConflict");
     if (mode === "reference-to-video" && imageReferenceCount + videoReferenceCount + audioReferenceCount < 1) return translate("generation.universalReferenceNeedsAtLeastOneAsset");
     return "";
 }

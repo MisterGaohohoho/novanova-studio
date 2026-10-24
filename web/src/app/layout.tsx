@@ -18,9 +18,12 @@ export async function generateMetadata(): Promise<Metadata> {
         title: editionsPage ? websiteMessages[locale].editions.compareEditionsNovanovaStudio : "Novanova Studio",
         description: editionsPage ? websiteMessages[locale].editions.compareEnterpriseFeaturesAcrossNovanovaStudioEditions : websiteMessages[locale].website.description,
         icons: {
-            icon: "/novanovastudio.png",
-            shortcut: "/novanovastudio.png",
-            apple: "/novanovastudio.png",
+            icon: [
+                { url: "/logo/novanovastudio.svg", type: "image/svg+xml" },
+                { url: "/logo/favicon-32x32.png", sizes: "32x32", type: "image/png" },
+            ],
+            shortcut: "/logo/favicon-32x32.png",
+            apple: "/logo/novanovastudio-108x108.png",
         },
     };
 }

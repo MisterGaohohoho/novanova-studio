@@ -6,7 +6,7 @@ import { useTranslation } from "@/features/locale/use-translation";
 
 
 import { BookOpen, CloudUpload, Download, FolderPlus, Cog, HelpCircle, Link2, LoaderCircle, Palette, Play, RefreshCw, Sparkles, TriangleAlert, Upload, VideoIcon } from "lucide-react";
-import React, { useCallback, useEffect, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { App, Button, Image, Input, Modal, Tag, Tooltip, Typography } from "antd";
 import { nanoid } from "nanoid";
 
@@ -23,6 +23,7 @@ import { MEDIA_FALLBACK_IMAGE, MediaPreview, useMediaFallback } from "@/features
 import { VideoSettingsPanel, videoResolutionLabel, videoSecondsLabel, videoSizeLabel } from "@/features/generation/components/video-settings-panel";
 import type { CreationComposerAction, CreationConversationItem, CreationReferenceChip, CreationStyleOption, CreationThreadRound, CreationThreadSection } from "@/features/generation/components/creation-workspace-types";
 import { seedanceReferenceLabel, SEEDANCE_REFERENCE_LIMITS } from "@/features/generation/lib/seedance-video";
+import { readVideoGenerationConstraintIssue, readVideoModelConfiguration } from "@/features/generation/lib/video-generation-constraints";
 import { formatBytes, formatDuration } from "@/features/generation/lib/image-utils";
 import { formatVideoGenerationSettingsSummary } from "@/features/generation/lib/generation-settings-summary";
 import type { ReferenceImage } from "@/features/generation/types/image";
@@ -40,6 +41,7 @@ import { clearInitialPromptFromLocation, readInitialPromptFromLocation } from "@
 import { useCopyText } from "@/shared/hooks/use-copy-text";
 import type { ObjectStorageFile } from "@/shared/types/object-storage";
 import { useAgentChatSSE } from "@/features/chat/use-agent-chat-sse";
+import { useModelConfigurationGuard } from "@/features/settings/hooks/use-model-configuration-guard";
 import { useAgentThinking } from "@/features/chat/use-agent-thinking";
 import type { AgentActivityState, ChatAttachment, ChatMessageItem, ToolCallState } from "@/features/chat/types";
 import { buildChatThreadSection } from "@/features/generation/components/chat-thread-section";
@@ -55,12 +57,13 @@ import {
     upsertAgentActivityMessage,
 } from "@/features/generation/components/agent-activity";
 import { hasPendingVideoConversation } from "@/features/generation/lib/generation-conversation-recovery";
-import { reconcileGenerationLogTasks } from "@/features/generation/lib/generation-log-task-reconciliation";
+import { useGenerationConversations } from "@/features/generation/hooks/use-generation-conversations";
 import { getGenerationConversationStatus, hasRunningGeneration, type GenerationLogStatusFields } from "@/features/generation/lib/generation-log-status";
 import { selectGenerationAttachments } from "@/features/generation/lib/generation-retry";
 import { imageReferenceAttachments, referenceMediaType, referenceMediaUrl, videoReferenceAttachments } from "@/features/generation/lib/reference-attachments";
 import { usePromptOptimization } from "@/features/generation/hooks/use-prompt-optimization";
 import { useRecentReferenceImages } from "@/features/generation/hooks/use-recent-reference-images";
+import { reconcileImageMentions, type PromptImageReference } from "@/features/generation/lib/image-reference-mentions";
 import { loadVideoLastUsedSettings, saveVideoLastUsedSettings, type VideoLastUsedSettings } from "@/features/generation/lib/last-used-generation-settings";
 import { formatGenerationStyleMessage } from "@/features/generation/lib/style-command";
 import { availableVideoModelsForMode, quoteVideoGeneration, videoGenerationReferenceIssue } from "@/features/generation/lib/video-billing";
@@ -69,7 +72,6 @@ import {
     cancelAiTask,
     deleteGenerationLogs,
     getAiTaskPollingIntervalMilliseconds,
-    listGenerationLogs,
     listGenerationStyles,
     listSkills,
     markGenerationLogViewed,
@@ -208,19 +210,19 @@ export default function VideoPage() {
     const effectiveConfig = useEffectiveConfig();
     const updateConfig = useConfigStore((state) => state.updateConfig);
     const configHydrated = useConfigStore((state) => state.hydrated);
-    const openConfigDialog = useConfigStore((state) => state.openConfigDialog);
     const userId = useUserStore((state) => state.user?.id);
-    const userRole = useUserStore((state) => state.user?.role);
     const creditBalance = useUserStore((state) => state.user?.creditBalance);
     const addAsset = useAssetStore((state) => state.addAsset);
     const resolvedTheme = useThemeStore((state) => state.resolvedTheme);
     const theme = canvasThemes[resolvedTheme];
     const { optimizingOperationId, optimizePrompt } = usePromptOptimization();
+    const ensureModelConfiguration = useModelConfigurationGuard();
     const { recentReferenceImageUrls, recordRecentReferenceImage } = useRecentReferenceImages(userId);
     const isPromptOptimizing = optimizingOperationId === "video-page";
 
-    const [conversations, setConversations] = useState<Conversation[]>([]);
     const [activeId, setActiveId] = useState<string | null>(null);
+    const activeIdRef = useRef(activeId);
+    const { conversations, setConversations, conversationsRef, refreshConversations, loadMoreConversations, conversationsLoading, hasMoreConversations, conversationsError, retryConversations } = useGenerationConversations("video", userId, activeIdRef, normalizeConversation);
     const [prompt, setPrompt] = useState("");
     const [styleOptions, setStyleOptions] = useState<CreationStyleOption[]>([]);
     const [selectedStyles, setSelectedStyles] = useState<CreationStyleOption[]>([]);
@@ -236,6 +238,36 @@ export default function VideoPage() {
     const [references, setReferences] = useState<ReferenceImage[]>([]);
     const [videoReferences, setVideoReferences] = useState<ReferenceVideo[]>([]);
     const [uploadingReferenceIds, setUploadingReferenceIds] = useState<string[]>([]);
+    const imageReferences = useMemo<PromptImageReference[]>(() => references.map((reference, index) => ({
+        id: reference.id,
+        name: reference.name,
+        label: seedanceReferenceLabel("image", index),
+        previewUrl: reference.dataUrl,
+        kind: "image",
+        disabled: uploadingReferenceIds.includes(reference.id),
+    })), [references, uploadingReferenceIds, translate.locale]);
+    // 参考视频同样参与 @ 引用；编号跳过不可播放的视频，与上方素材 chip 保持一致。
+    const videoMentionReferences = useMemo<PromptImageReference[]>(() => videoReferences
+        .filter((reference) => hasPlayableVideoUrl(reference.url))
+        .map((reference, index) => ({
+            id: reference.id,
+            name: reference.name,
+            label: seedanceReferenceLabel("video", index),
+            previewUrl: reference.url,
+            kind: "video",
+            disabled: uploadingReferenceIds.includes(reference.id),
+        })), [videoReferences, uploadingReferenceIds, translate.locale]);
+    const promptReferences = useMemo(() => [...imageReferences, ...videoMentionReferences], [imageReferences, videoMentionReferences]);
+    const previousImageReferencesRef = useRef<PromptImageReference[]>([]);
+
+    useEffect(() => {
+        const previous = previousImageReferencesRef.current;
+        previousImageReferencesRef.current = promptReferences;
+        const currentLabels = new Map(promptReferences.map((reference) => [reference.id, reference.label]));
+        if (!previous.some((reference) => currentLabels.get(reference.id) !== reference.label)) return;
+        // 素材删除、上传失败或语言切换后，按素材标识更新编号，避免引用指向其他素材。
+        setPrompt((current) => reconcileImageMentions(current, previous, promptReferences));
+    }, [promptReferences]);
     const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
     const [settingsOpen, setSettingsOpen] = useState(false);
     const [videoDraftSettingsModified, setVideoDraftSettingsModified] = useState(false);
@@ -336,6 +368,7 @@ export default function VideoPage() {
 
     // 文生视频模式下上传参考素材时，按素材类型自动切换生成模式：仅图片 → 图生视频；含视频 → 全能参考。
     const autoSwitchModeForReferences = (addedImages: number, addedVideos: number) => {
+        if (readVideoModelConfiguration(effectiveConfig)?.isCustomModel) return;
         if (config.videoGenerationMode !== "text-to-video") return;
         if (videoReferences.length + addedVideos > 0) {
             handleVideoSettingsChange("videoGenerationMode", "reference-to-video");
@@ -444,24 +477,6 @@ export default function VideoPage() {
     const toolCallsRef = useRef(toolCalls);
     const pendingVideoSizeRef = useRef("");
     const chatMessagesRef = useRef(chatMessages);
-    const conversationsRef = useRef(conversations);
-    const activeIdRef = useRef(activeId);
-
-    const refreshConversations = useCallback(async () => {
-        let nextConversations = await readConversations();
-        const activeConversation = nextConversations.find((conversation) => conversation.id === activeIdRef.current);
-        if (activeConversation && getGenerationConversationStatus(activeConversation) !== "none" && activeConversation.generationStatus !== "running") {
-            try {
-                await markGenerationLogViewed(activeConversation.id);
-                nextConversations = nextConversations.map((conversation) => (conversation.id === activeConversation.id ? { ...conversation, generationViewedAt: conversation.generationCompletedAt } : conversation));
-            } catch (error) {
-                console.error("标记视频生成记录已读失败", error);
-            }
-        }
-        conversationsRef.current = nextConversations;
-        setConversations(nextConversations);
-        return nextConversations;
-    }, []);
 
     const { sessionId, isStreaming, isQueued, isStopping, sendMessage, cancelMessage, canChangeSession, resetSession, restoreSession } = useAgentChatSSE({
         entrySource: "videoPage",
@@ -657,6 +672,7 @@ export default function VideoPage() {
         mode: config.videoGenerationMode,
         resolution: config.vquality,
         seconds: config.videoSeconds,
+        size: config.size,
         imageReferenceCount: references.length,
         videoReferenceCount: videoReferences.length,
         requireReferences: false,
@@ -672,6 +688,7 @@ export default function VideoPage() {
         const quoteResolution = workflowImageConfirmNext ? workflowVideoResolution : config.vquality;
         const quoteSeconds = workflowImageConfirmNext ? workflowVideoSeconds : config.videoSeconds;
         void quoteVideoWorkflowOnServer({ workflowType: selectedSkill.workflowType, model, imageModel: workflowImageModel, resolution: quoteResolution, seconds: quoteSeconds,
+            size: workflowImageConfirmNext ? workflowVideoSize : selectedSkill.aspectRatio || config.size,
             stage: workflowImageConfirmNext ? "video" : "image" })
             .then((quote) => {
                 if (!cancelled) setServerWorkflowQuote(quote);
@@ -682,7 +699,7 @@ export default function VideoPage() {
         return () => {
             cancelled = true;
         };
-    }, [config.videoSeconds, config.vquality, workflowImageModel, workflowDraftRoundId, workflowImageConfirmNext, workflowVideoResolution, workflowVideoSeconds, model, selectedSkill?.workflowType]);
+    }, [config.size, config.videoSeconds, config.vquality, workflowImageModel, workflowDraftRoundId, workflowImageConfirmNext, workflowVideoResolution, workflowVideoSeconds, workflowVideoSize, model, selectedSkill?.aspectRatio, selectedSkill?.workflowType]);
     // 图片确认轮：本次确认仅生成视频，报价只取视频阶段（首/尾帧图片已按草案确认时参数生成完毕）。
     const workflowVideoStageQuote = workflowImageConfirmNext && serverWorkflowQuote ? (serverWorkflowQuote.stages.find((stage) => stage.role === "video") ?? null) : null;
     const workflowImageConfirmQuote = workflowVideoStageQuote
@@ -699,7 +716,9 @@ export default function VideoPage() {
             : (workflowImageConfirmQuote ?? (workflowImageConfirmNext ? { available: false as const, reason: translate("video.fetchingWorkflowQuote") } : null))
         : videoQuote;
     // 素材要求单独校验，用于「可生成」判定与提示，不阻断价格预览。
-    const referenceIssue = videoGenerationReferenceIssue(config.videoGenerationMode, references.length, videoReferences.length);
+    const referenceIssue = readVideoGenerationConstraintIssue({ config: effectiveConfig, model, mode: config.videoGenerationMode,
+        size: config.size, seconds: config.videoSeconds, imageCount: references.length, videoCount: videoReferences.length })
+        || videoGenerationReferenceIssue(config.videoGenerationMode, references.length, videoReferences.length);
     const creditCost = activeQuote === null ? undefined : activeQuote.available ? (activeQuote.credits ?? null) : null;
     const workflowBalanceInsufficient = Boolean(selectedSkill?.workflowType) && activeQuote !== null && activeQuote.available && typeof creditBalance === "number" && (activeQuote.credits ?? 0) > creditBalance;
     const draftSettingsSummary = videoDraftSettingsModified ? buildVideoSettingsSummary(config, effectiveConfig, model) : "";
@@ -777,6 +796,16 @@ export default function VideoPage() {
         };
     }, [conversations, refreshConversations]);
 
+    const canAddReferences = (images: number, videos: number) => {
+        const custom = readVideoModelConfiguration(effectiveConfig, model)?.isCustomModel;
+        const issue = custom ? readVideoGenerationConstraintIssue({ config: effectiveConfig, model, mode: config.videoGenerationMode,
+            imageCount: references.length + images, videoCount: videoReferences.length + videos, addingReferences: true })
+            : references.length + images > SEEDANCE_REFERENCE_LIMITS.images ? translate("video.addUpToReferenceImages", { value0: SEEDANCE_REFERENCE_LIMITS.images })
+            : videoReferences.length + videos > SEEDANCE_REFERENCE_LIMITS.videos ? translate("generation.atMostSeedanceReferenceVideos", { value0: SEEDANCE_REFERENCE_LIMITS.videos }) : "";
+        if (issue) message.warning(issue);
+        return !issue;
+    };
+
     const addReferences = async (files?: FileList | File[] | null): Promise<{ images: ReferenceImage[]; videos: ReferenceVideo[] }> => {
         try {
             const selectedFiles = Array.from(files || []);
@@ -785,8 +814,9 @@ export default function VideoPage() {
                 message.warning(translate("video.unsupportedReferencesIgnored"));
             }
 
-            const imageFiles = selectedFiles.filter((file) => file.type.startsWith("image/") && file.size <= SEEDANCE_REFERENCE_LIMITS.imageMaxBytes).slice(0, SEEDANCE_REFERENCE_LIMITS.images - references.length);
-            const videoFiles = selectedFiles.filter((file) => file.type.startsWith("video/") && file.size <= SEEDANCE_REFERENCE_LIMITS.videoMaxBytes).slice(0, SEEDANCE_REFERENCE_LIMITS.videos - videoReferences.length);
+            const imageFiles = selectedFiles.filter((file) => file.type.startsWith("image/") && file.size <= SEEDANCE_REFERENCE_LIMITS.imageMaxBytes);
+            const videoFiles = selectedFiles.filter((file) => file.type.startsWith("video/") && file.size <= SEEDANCE_REFERENCE_LIMITS.videoMaxBytes);
+            if (!canAddReferences(imageFiles.length, videoFiles.length)) return { images: [], videos: [] };
             if (selectedFiles.some((file) => file.type.startsWith("image/") && file.size > SEEDANCE_REFERENCE_LIMITS.imageMaxBytes)) {
                 message.warning(translate("video.referenceImagesOver30MBIgnored"));
             }
@@ -810,8 +840,8 @@ export default function VideoPage() {
             if (!placeholders.length) {
                 return { images: [], videos: [] };
             }
-            setReferences((current) => [...current, ...imagePlaceholders].slice(0, SEEDANCE_REFERENCE_LIMITS.images));
-            setVideoReferences((current) => [...current, ...videoPlaceholders].slice(0, SEEDANCE_REFERENCE_LIMITS.videos));
+            setReferences((current) => [...current, ...imagePlaceholders]);
+            setVideoReferences((current) => [...current, ...videoPlaceholders]);
             autoSwitchModeForReferences(imageFiles.length, videoFiles.length);
             setUploadingReferenceIds((current) => [...current, ...placeholders.map((placeholder) => placeholder.id)]);
 
@@ -880,6 +910,7 @@ export default function VideoPage() {
             message.error(translate("video.enterVideoPrompt"));
             return;
         }
+        if (!ensureModelConfiguration("video", model) || !ensureModelConfiguration("text")) return;
 
         resetThinkings();
 
@@ -898,6 +929,7 @@ export default function VideoPage() {
             mode: config.videoGenerationMode,
             resolution: quality,
             seconds,
+            size,
             imageReferenceCount: allRefs.filter((reference) => reference.type.startsWith("image/")).length,
             videoReferenceCount: allRefs.filter((reference) => reference.type.startsWith("video/")).length,
         });
@@ -977,6 +1009,7 @@ export default function VideoPage() {
         if (isStreaming || isQueued) return;
         const text = value.trim();
         if (!text) return;
+        if (!ensureModelConfiguration("video", model) || !ensureModelConfiguration("text")) return;
         // 点击"确认生成"即真实扣费：报价不可用或余额不足时拦截；调整提示词等其余选项免费
         if (workflowChargingNext && text === "确认生成") {
             if (!workflowImageSelectionComplete) {
@@ -1057,6 +1090,7 @@ export default function VideoPage() {
     };
 
     const submitPromptEdit = () => {
+        if (!ensureModelConfiguration("video", model) || !ensureModelConfiguration("text")) return;
         const values = promptEditValue;
         if (promptEditMode === "three") {
             if (![values.firstFrame, values.lastFrame, values.video].some((item) => item.trim())) {
@@ -1078,6 +1112,7 @@ export default function VideoPage() {
     /** 技能引导中"上传图片"按钮选择文件后：上传参考素材并在对话区回显，随后自动发送带附件的消息。 */
     const handleUploadFromChoice = async (files?: FileList | null) => {
         if (!files?.length) return;
+        if (!ensureModelConfiguration("video", model) || !ensureModelConfiguration("text")) return;
         const { images, videos } = await addReferences(files);
         const attachments = [...imageReferenceAttachments(images), ...videoReferenceAttachments(videos)];
         if (!attachments.length || isStreaming || isQueued) return;
@@ -1093,6 +1128,7 @@ export default function VideoPage() {
             mode: config.videoGenerationMode,
             resolution: quality,
             seconds,
+            size,
             imageReferenceCount: attachments.filter((reference) => reference.type.startsWith("image/")).length,
             videoReferenceCount: attachments.filter((reference) => reference.type.startsWith("video/")).length,
         });
@@ -1124,6 +1160,7 @@ export default function VideoPage() {
     const regenerateRound = async (round: Round) => {
         if (!canChangeSession()) return;
         const videoModel = round.config.videoModel || round.config.model || model;
+        if (!ensureModelConfiguration("video", videoModel) || !ensureModelConfiguration("text")) return;
         const size = round.config.size;
         const resolution = round.config.vquality;
         const attachments = [...imageReferenceAttachments(round.references), ...videoReferenceAttachments(round.videoReferences)];
@@ -1325,6 +1362,7 @@ export default function VideoPage() {
     };
 
     const insertPickedAsset = (payload: InsertAssetPayload) => {
+        if (payload.kind === "image" && !canAddReferences(1, 0) || payload.kind === "video" && !canAddReferences(0, 1)) return;
         if (payload.kind === "text") {
             setPrompt(payload.content);
         } else if (payload.kind === "image") {
@@ -1342,7 +1380,7 @@ export default function VideoPage() {
                             storageKey: payload.storageKey,
                             objectStorage: payload.objectStorage,
                         },
-                    ].slice(0, SEEDANCE_REFERENCE_LIMITS.images),
+                    ],
                 );
                 autoSwitchModeForReferences(1, 0);
             }
@@ -1364,7 +1402,7 @@ export default function VideoPage() {
                         height: payload.height,
                         objectStorage: payload.objectStorage,
                     },
-                ].slice(0, SEEDANCE_REFERENCE_LIMITS.videos),
+                ],
             );
             autoSwitchModeForReferences(0, 1);
         }
@@ -1447,10 +1485,7 @@ export default function VideoPage() {
             }),
     ];
     const addRecentReference = (url: string) => {
-        if (references.length >= SEEDANCE_REFERENCE_LIMITS.images) {
-            message.warning(translate("video.addUpToReferenceImages", { value0: SEEDANCE_REFERENCE_LIMITS.images }));
-            return;
-        }
+        if (references.some((reference) => reference.dataUrl === url) || !canAddReferences(1, 0)) return;
         setReferences((current) => {
             if (current.some((reference) => reference.dataUrl === url)) return current;
             return [...current, { id: nanoid(), name: translate("video.recentReferenceImages"), type: "image/*", dataUrl: url }];
@@ -1462,7 +1497,7 @@ export default function VideoPage() {
             key: "upload",
             label: translate("video.assets"),
             icon: <Upload className="size-3.5" />,
-            popoverContent: <RecentReferenceImagePicker urls={recentReferenceImageUrls} selectedUrls={references.map((reference) => reference.dataUrl)} disabled={references.length >= SEEDANCE_REFERENCE_LIMITS.images} onSelect={addRecentReference} />,
+            popoverContent: <RecentReferenceImagePicker urls={recentReferenceImageUrls} selectedUrls={references.map((reference) => reference.dataUrl)} onSelect={addRecentReference} />,
             onClick: () => fileInputRef.current?.click(),
         },
         {
@@ -1479,7 +1514,14 @@ export default function VideoPage() {
             iconOnly: true,
             disabled: !prompt.trim() || isStreaming || isQueued || activeConversationPending || isPromptOptimizing,
             loading: isPromptOptimizing,
-            onClick: () => void optimizePrompt({ operationId: "video-page", generationType: "video", prompt, generationStyleIds: selectedStyles.map((style) => style.id), onSuccess: setPrompt }),
+            onClick: () => void optimizePrompt({
+                operationId: "video-page",
+                generationType: "video",
+                prompt,
+                generationStyleIds: selectedStyles.map((style) => style.id),
+                imageReferences: promptReferences,
+                onSuccess: (optimizedPrompt) => setPrompt(reconcileImageMentions(optimizedPrompt, promptReferences, previousImageReferencesRef.current)),
+            }),
         },
         {
             key: "assets",
@@ -1517,7 +1559,6 @@ export default function VideoPage() {
                     onChange={(value) => updateWorkflowImageSelection({ imageModel: value })}
                     capability="image"
                     fullWidth
-                    onMissingConfig={() => (userRole === "admin" ? openConfigDialog(false) : message.error(translate("video.askTheAdministratorToConfigureAnImageModel")))}
                 />
             </div>
         </div>
@@ -1667,6 +1708,11 @@ export default function VideoPage() {
                 sidebar={{
                     heading: translate("video.startCreating"),
                     items: conversationItems,
+                    loading: conversationsLoading,
+                    hasMore: hasMoreConversations,
+                    loadError: conversationsError ? translate("generation.failedToLoadConversations") : null,
+                    onLoadMore: loadMoreConversations,
+                    onRetry: () => void retryConversations(),
                     managementMode,
                     hasSelection: selectedIds.length > 0,
                     mobileOpen: mobileSidebarOpen,
@@ -1718,6 +1764,7 @@ export default function VideoPage() {
                     value: prompt,
                     placeholder: translate("video.describeCameraMotionSubjectActionAtmosphereAndVisualStyle"),
                     references: referenceChips,
+                    imageReferences: promptReferences,
                     styleOptions,
                     selectedStyles,
                     styleLoading,
@@ -1782,7 +1829,6 @@ export default function VideoPage() {
                                     capability="video"
                                     modelOptions={availableVideoModelsForMode(effectiveConfig, config.videoGenerationMode)}
                                     fullWidth
-                                    onMissingConfig={() => (userRole === "admin" ? openConfigDialog(false) : message.error(translate("video.askTheAdministratorToConfigureAVideoModel")))}
                                 />
                             </div>
                         </div>
@@ -2412,21 +2458,6 @@ function FailedCard({ error, canceled, skipped }: { error: string; canceled?: bo
             </div>
         </div>
     );
-}
-
-async function readConversations() {
-    if (typeof window === "undefined") {
-        return [];
-    }
-
-    try {
-        const values = await listGenerationLogs<Conversation>("video");
-        const reconciledValues = await reconcileGenerationLogTasks("video", values);
-        const conversations = await Promise.all(reconciledValues.map(normalizeConversation));
-        return conversations.sort((left, right) => (right.updatedAt || right.createdAt || 0) - (left.updatedAt || left.createdAt || 0));
-    } catch {
-        return [];
-    }
 }
 
 async function normalizeConversation(raw: Partial<Conversation>): Promise<Conversation> {

@@ -12,6 +12,7 @@ import { nanoid } from "nanoid";
 
 import { ImageGeneratingCard, renderPendingImageToolCall } from "./components/pending-image-tool-call";
 import { regenerateImageRound } from "./image-round-regenerate";
+import { useModelConfigurationGuard } from "@/features/settings/hooks/use-model-configuration-guard";
 import { AssetPickerModal, type InsertAssetPayload } from "@/features/assets/components/asset-picker-modal";
 import { useAssetStore } from "@/features/assets/stores/use-asset-store";
 import { useUserStore } from "@/features/auth/stores/use-user-store";
@@ -29,7 +30,7 @@ import { ChoiceHistoryBar } from "@/features/generation/components/creation-mess
 import { ResultDetailDialog, type ResultDetail } from "@/features/generation/components/result-detail-dialog";
 import { createToolExecutionActivity, finishRoundAgentActivities, finishRunningAgentActivities, mergePlanTaskActivityMessage, normalizeHistoricalAgentActivities, updateAgentActivityMessage, upsertAgentActivityMessage } from "@/features/generation/components/agent-activity";
 import { findLatestPendingConversation, hasPendingImageConversation } from "@/features/generation/lib/generation-conversation-recovery";
-import { reconcileGenerationLogTasks } from "@/features/generation/lib/generation-log-task-reconciliation";
+import { useGenerationConversations } from "@/features/generation/hooks/use-generation-conversations";
 import { getGenerationConversationStatus, hasRunningGeneration, type GenerationLogStatusFields } from "@/features/generation/lib/generation-log-status";
 import { selectGenerationAttachments } from "@/features/generation/lib/generation-retry";
 import { imageReferenceAttachments, referenceMediaType, referenceMediaUrl } from "@/features/generation/lib/reference-attachments";
@@ -52,7 +53,7 @@ import { canvasThemes } from "@/shared/lib/canvas-theme";
 import { clearInitialPromptFromLocation, readInitialPromptFromLocation } from "@/shared/lib/initial-prompt";
 import { useCopyText } from "@/shared/hooks/use-copy-text";
 import type { ObjectStorageFile } from "@/shared/types/object-storage";
-import { deleteGenerationLogs, getAiTaskPollingIntervalMilliseconds, listGenerationLogs, listGenerationStyles, listSkills, markGenerationLogViewed, renameGenerationLogTitle, type GenerationStyleSnapshot, type SkillOption } from "@/services/api/server";
+import { deleteGenerationLogs, getAiTaskPollingIntervalMilliseconds, listGenerationStyles, listSkills, markGenerationLogViewed, renameGenerationLogTitle, type GenerationStyleSnapshot, type SkillOption } from "@/services/api/server";
 
 type GeneratedImage = {
     id: string;
@@ -115,10 +116,8 @@ export default function ImagePage() {
     const effectiveConfig = useEffectiveConfig();
     const updateConfig = useConfigStore((state) => state.updateConfig);
     const configHydrated = useConfigStore((state) => state.hydrated);
-    const isAiConfigReady = useConfigStore((state) => state.isAiConfigReady);
-    const openConfigDialog = useConfigStore((state) => state.openConfigDialog);
+    const ensureModelConfiguration = useModelConfigurationGuard();
     const userId = useUserStore((state) => state.user?.id);
-    const userRole = useUserStore((state) => state.user?.role);
     const addAsset = useAssetStore((state) => state.addAsset);
     const resolvedTheme = useThemeStore((state) => state.resolvedTheme);
     const theme = canvasThemes[resolvedTheme];
@@ -126,8 +125,9 @@ export default function ImagePage() {
     const { recentReferenceImageUrls, recordRecentReferenceImage } = useRecentReferenceImages(userId);
     const isPromptOptimizing = optimizingOperationId === "image-page";
 
-    const [conversations, setConversations] = useState<Conversation[]>([]);
     const [activeId, setActiveId] = useState<string | null>(null);
+    const activeIdRef = useRef(activeId);
+    const { conversations, setConversations, conversationsRef, refreshConversations, loadMoreConversations, conversationsLoading, hasMoreConversations, conversationsError, retryConversations } = useGenerationConversations("image", userId, activeIdRef, normalizeConversation);
     const [prompt, setPrompt] = useState("");
     const [styleOptions, setStyleOptions] = useState<CreationStyleOption[]>([]);
     const [selectedStyles, setSelectedStyles] = useState<CreationStyleOption[]>([]);
@@ -243,24 +243,6 @@ export default function ImagePage() {
     const streamingTextRef = useRef(streamingText);
     const toolCallsRef = useRef(toolCalls);
     const chatMessagesRef = useRef(chatMessages);
-    const activeIdRef = useRef(activeId);
-    const conversationsRef = useRef(conversations);
-
-    const refreshConversations = useCallback(async () => {
-        let nextConversations = await readConversations();
-        const activeConversation = nextConversations.find((conversation) => conversation.id === activeIdRef.current);
-        if (activeConversation && getGenerationConversationStatus(activeConversation) !== "none" && activeConversation.generationStatus !== "running") {
-            try {
-                await markGenerationLogViewed(activeConversation.id);
-                nextConversations = nextConversations.map((conversation) => (conversation.id === activeConversation.id ? { ...conversation, generationViewedAt: conversation.generationCompletedAt } : conversation));
-            } catch (error) {
-                console.error("标记图片生成记录已读失败", error);
-            }
-        }
-        conversationsRef.current = nextConversations;
-        setConversations(nextConversations);
-        return nextConversations;
-    }, []);
 
     const { sessionId, isStreaming, isQueued, isStopping, sendMessage, cancelMessage, canChangeSession, resetSession, restoreSession } = useAgentChatSSE({
         entrySource: "imagePage",
@@ -445,7 +427,7 @@ export default function ImagePage() {
         },
     });
 
-    const creditCost = requestCreditCost({ modelCosts: effectiveConfig.modelCosts, model, taskType: "image", count: 1 });
+    const creditCost = requestCreditCost({ modelCosts: effectiveConfig.modelCosts, model, taskType: "image", count: 1, resolution: config.imageResolution });
     const activeConversation = conversations.find((item) => item.id === activeId) || null;
     const latestRound = activeConversation?.rounds.at(-1);
     const historyModel = !imageDraftSettingsModified && activeId && latestRound?.config ? latestRound.config.imageModel || latestRound.config.model || "" : "";
@@ -546,6 +528,7 @@ export default function ImagePage() {
             message.error(translate("image.enterImagePrompt"));
             return;
         }
+        if (!ensureModelConfiguration("image", model) || !ensureModelConfiguration("text")) return;
 
         resetThinkings();
 
@@ -571,6 +554,7 @@ export default function ImagePage() {
         if (isStreaming || isQueued) return;
         const text = value.trim();
         if (!text) return;
+        if (!ensureModelConfiguration("image", model) || !ensureModelConfiguration("text")) return;
         // 技能引导中选择生成比例时同步页面尺寸配置，保证最终生成任务按用户选择的比例（而非页面默认 1:1）
         if (/^\d+:\d+$/.test(text)) {
             updateConfig("size", text);
@@ -588,6 +572,7 @@ export default function ImagePage() {
     /** 技能引导中"上传图片"按钮选择文件后：上传参考图并在对话区回显，随后自动发送带附件的消息。 */
     const handleUploadFromChoice = async (files?: FileList | null) => {
         if (!files?.length) return;
+        if (!ensureModelConfiguration("image", model) || !ensureModelConfiguration("text")) return;
         const uploaded = await addReferences(files);
         if (!uploaded.length || isStreaming || isQueued) return;
         const text = translate("image.productImageUploaded");
@@ -608,6 +593,7 @@ export default function ImagePage() {
 
     const regenerateRound = async (round: Round) => {
         if (!canChangeSession()) return;
+        if (!ensureModelConfiguration("image", round.config.imageModel || round.config.model || model) || !ensureModelConfiguration("text")) return;
         await regenerateImageRound(round, {
             fallbackModel: model,
             appendUserMessage: (text, generationStyles) => {
@@ -1006,6 +992,11 @@ export default function ImagePage() {
                 sidebar={{
                     heading: translate("image.startCreating"),
                     items: conversationItems,
+                    loading: conversationsLoading,
+                    hasMore: hasMoreConversations,
+                    loadError: conversationsError ? translate("generation.failedToLoadConversations") : null,
+                    onLoadMore: loadMoreConversations,
+                    onRetry: () => void retryConversations(),
                     managementMode,
                     hasSelection: selectedIds.length > 0,
                     mobileOpen: mobileSidebarOpen,
@@ -1100,7 +1091,6 @@ export default function ImagePage() {
                                     }}
                                     capability="image"
                                     fullWidth
-                                    onMissingConfig={() => (userRole === "admin" ? openConfigDialog(false) : message.error(translate("image.askTheAdministratorToConfigureAnImageModel")))}
                                 />
                             </div>
                         </div>
@@ -1304,8 +1294,10 @@ function buildImageThreadSections(
                             />
                         ) : result.status === "failed" || result.status === "canceled" ? (
                             <FailedCard key={result.id} error={result.error || translate("image.generationFailed")} canceled={result.status === "canceled"} />
-                        ) : (
+                        ) : result.status === "pending" ? (
                             <ImageGeneratingCard key={result.id} size={round.config.size} />
+                        ) : (
+                            <FailedCard key={result.id} error={translate("generation.imageTaskCompletedWithoutImages")} />
                         ),
                     )}
                 </div>
@@ -1571,21 +1563,6 @@ function FailedCard({ error, canceled }: { error: string; canceled?: boolean }) 
             </div>
         </div>
     );
-}
-
-async function readConversations() {
-    if (typeof window === "undefined") {
-        return [];
-    }
-
-    try {
-        const values = await listGenerationLogs<Conversation>("image");
-        const reconciledValues = await reconcileGenerationLogTasks("image", values);
-        const conversations = await Promise.all(reconciledValues.map(normalizeConversation));
-        return conversations.sort((left, right) => (right.updatedAt || right.createdAt || 0) - (left.updatedAt || left.createdAt || 0));
-    } catch {
-        return [];
-    }
 }
 
 async function normalizeConversation(raw: Partial<Conversation>): Promise<Conversation> {

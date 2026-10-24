@@ -82,6 +82,7 @@ import { CanvasChatPanel } from "../components/canvas-chat-panel";
 import type { CanvasImageCropRect } from "../components/canvas-node-crop-dialog";
 import { CanvasThemeProvider, useCanvasTheme } from "../components/canvas-theme-provider";
 import type { CanvasImageSplitParams } from "../components/canvas-node-split-dialog";
+import { readVideoGenerationConstraintIssue, readVideoModelConfiguration } from "@/features/generation/lib/video-generation-constraints";
 import { buildNodeGenerationContext, buildNodeResponseMessages, hasNodeGenerationInputs, hydrateNodeGenerationContext, resolveNodeGenerationPrompt } from "../components/canvas-node-generation";
 import { CanvasNodeHoverToolbar } from "../components/canvas-node-hover-toolbar";
 import { CanvasNavigationPanel, CanvasStoryboardAssetPreviewDialog, type CanvasNavigationAsset, type CanvasNavigationPanelState, type CanvasNavigationTab } from "../components/canvas-navigation-panel";
@@ -345,20 +346,13 @@ function CanvasWorkspacePage() {
     const effectiveConfig = useEffectiveConfig();
     const isAiConfigReady = useConfigStore((state) => state.isAiConfigReady);
     const updateConfig = useConfigStore((state) => state.updateConfig);
-    const openConfigDialog = useConfigStore((state) => state.openConfigDialog);
-    const userRole = useUserStore((state) => state.user?.role);
     const creditBalance = useUserStore((state) => state.user?.creditBalance);
     const setCreditBalance = useUserStore((state) => state.setCreditBalance);
     const showMissingAiConfig = useCallback(
-        (mode: CanvasNodeGenerationMode) => {
-            if (userRole === "admin") {
-                openConfigDialog(true);
-                return;
-            }
-            const label = mode === "image" ? translate("canvas.generateImage") : mode === "video" ? translate("canvas.generateVideo") : translate("canvas.text_dd8186");
-            message.error(translate("canvas.askTheAdministratorToConfigureADefaultModel", { value0: label }));
+        (_mode: CanvasNodeGenerationMode) => {
+            message.warning(translate("settings.contactAdministratorForModel"));
         },
-        [message, openConfigDialog, userRole],
+        [message, translate],
     );
     const addAsset = useAssetStore((state) => state.addAsset);
     const assets = useAssetStore((state) => state.assets);
@@ -914,6 +908,21 @@ function CanvasWorkspacePage() {
         }, 120);
     }, []);
 
+    /** 素材或连线新增时先检查增量，拒绝整次操作并保留现有画布。 */
+    const readVideoReferenceAdditionIssue = useCallback((nextNodes: CanvasDomainNode[], nextConnections: CanvasConnection[]) => {
+        for (const node of nextNodes) {
+            if (!isVideoNode(node)) continue;
+            const config = buildGenerationConfig(effectiveConfig, node, "video");
+            if (!readVideoModelConfiguration(config)?.isCustomModel) continue;
+            const previous = buildNodeGenerationContext(node.id, nodesRef.current, connectionsRef.current, "");
+            const next = buildNodeGenerationContext(node.id, nextNodes, nextConnections, "");
+            if (next.imageCount <= previous.imageCount && next.videoCount <= previous.videoCount && next.audioCount <= previous.audioCount) continue;
+            const issue = readVideoGenerationConstraintIssue({ config, imageCount: next.imageCount, videoCount: next.videoCount, audioCount: next.audioCount, addingReferences: true });
+            if (issue) return issue;
+        }
+        return "";
+    }, [effectiveConfig]);
+
     const connectNodes = useCallback(
         (current: ConnectionHandle, targetNodeId: string) => {
             if (current.nodeId === targetNodeId) return;
@@ -923,7 +932,8 @@ function CanvasWorkspacePage() {
                 message.warning(translate("canvas.configurationNodesCannotConnect"));
                 return;
             }
-            const errorMessage = readVideoCompositionConnectionError(connection.source.nodeId, connection.target.nodeId, nodesRef.current, connectionsRef.current);
+            const errorMessage = readVideoCompositionConnectionError(connection.source.nodeId, connection.target.nodeId, nodesRef.current, connectionsRef.current)
+                || readVideoReferenceAdditionIssue(nodesRef.current, [...connectionsRef.current, { id: "pending", ...connection }]);
             if (errorMessage) {
                 message.warning(errorMessage);
                 return;
@@ -936,7 +946,7 @@ function CanvasWorkspacePage() {
             }
             setContextMenu(null);
         },
-        [message],
+        [message, readVideoReferenceAdditionIssue],
     );
 
     // 处理提示词@面板选择的资产连线，成功或已有连线时返回 true。
@@ -960,7 +970,8 @@ function CanvasWorkspacePage() {
                 source: { ...normalizedConnection.source, portId: "right" },
                 target: { ...normalizedConnection.target, portId: "left" },
             };
-            const errorMessage = readVideoCompositionConnectionError(connection.source.nodeId, connection.target.nodeId, nodesRef.current, connectionsRef.current);
+            const errorMessage = readVideoCompositionConnectionError(connection.source.nodeId, connection.target.nodeId, nodesRef.current, connectionsRef.current)
+                || readVideoReferenceAdditionIssue(nodesRef.current, [...connectionsRef.current, { id: "pending", ...connection }]);
             if (errorMessage) {
                 message.warning(errorMessage);
                 return false;
@@ -973,7 +984,7 @@ function CanvasWorkspacePage() {
             }
             return true;
         },
-        [message],
+        [message, readVideoReferenceAdditionIssue],
     );
 
     const createConnectedNode = useCallback(
@@ -1020,7 +1031,8 @@ function CanvasWorkspacePage() {
                 message.warning(translate("canvas.configurationNodesCannotConnect"));
                 return;
             }
-            const errorMessage = readVideoCompositionConnectionError(connection.source.nodeId, connection.target.nodeId, [...nodesRef.current, newNode], connectionsRef.current);
+            const errorMessage = readVideoCompositionConnectionError(connection.source.nodeId, connection.target.nodeId, [...nodesRef.current, newNode], connectionsRef.current)
+                || readVideoReferenceAdditionIssue([...nodesRef.current, newNode], [...connectionsRef.current, { id: "pending", ...connection }]);
             if (errorMessage) {
                 message.warning(errorMessage);
                 return;
@@ -1034,7 +1046,7 @@ function CanvasWorkspacePage() {
             setPendingConnectionCreate(null);
             setConnecting(null);
         },
-        [effectiveConfig.channels, effectiveConfig.textModel, message, requestFocusNodes, setConnecting],
+        [effectiveConfig.channels, effectiveConfig.textModel, message, readVideoReferenceAdditionIssue, requestFocusNodes, setConnecting],
     );
 
     const cancelPendingConnectionCreate = useCallback(() => {
@@ -1232,8 +1244,6 @@ function CanvasWorkspacePage() {
             const stateOps: CanvasAgentOp[] = [];
             safeOps.forEach((operation) => (operation.type === "run_generation" ? generationOps : stateOps).push(operation));
             const next = applyCanvasAgentOps(before, stateOps);
-            setAgentUndoSnapshot(before);
-            commitAgentSnapshot(next);
             for (const operation of generationOps) {
                 if (!operation.nodeId) throw new Error(translate("canvas.generationNodeIDIsRequired"));
                 const target = next.nodes.find((node) => node.id === operation.nodeId);
@@ -1243,8 +1253,10 @@ function CanvasWorkspacePage() {
                 const generationConfig = buildGenerationConfig(effectiveConfig, target, mode);
                 if (isAiConfigReady(generationConfig, generationConfig.model)) continue;
                 showMissingAiConfig(mode);
-                throw new Error(translate("canvas.generationNodeCreatedButModelConfigurationIsIncomplete", { value0: mode === "image" ? translate("canvas.image") : mode === "video" ? translate("canvas.video") : translate("canvas.text_dd8186") }));
+                throw new Error(translate("settings.contactAdministratorForModel"));
             }
+            setAgentUndoSnapshot(before);
+            commitAgentSnapshot(next);
             if (!generationOps.length) {
                 return { snapshot: { ...next, projectId, title: currentDocument?.identity.title || translate("canvas.untitledCanvas") } };
             }
@@ -2392,7 +2404,7 @@ function CanvasWorkspacePage() {
             const modelValue = selectedModel === undefined ? node.content.model || effectiveConfig.textModel : selectedModel;
             const model = normalizeModelOptionValue(modelValue, effectiveConfig.channels);
             if (!model || !effectiveConfig.textModels.includes(model) || !isAiConfigReady(effectiveConfig, model)) {
-                message.error(translate("canvas.selectATextModelBeforeGeneratingStoryboard"));
+                message.warning(translate("settings.contactAdministratorForModel"));
                 return null;
             }
             return {
@@ -2501,7 +2513,7 @@ function CanvasWorkspacePage() {
             }
             const normalizedModel = normalizeModelOptionValue(settings.model, effectiveConfig.channels);
             if (!normalizedModel || !effectiveConfig.imageModels.includes(normalizedModel) || !isAiConfigReady(effectiveConfig, normalizedModel)) {
-                message.error(translate("canvas.selectAnImageModelBeforeGeneratingAssets"));
+                message.warning(translate("settings.contactAdministratorForModel"));
                 return;
             }
             const unnamedAsset = selectedAssets.find((asset) => !asset.name.trim());
@@ -2510,7 +2522,7 @@ function CanvasWorkspacePage() {
                 return;
             }
             const normalizedSettings: CanvasStoryboardAssetGenerationSettings = { ...settings, model: normalizedModel };
-            const totalCredits = readStoryboardAssetImageCost(effectiveConfig.modelCosts, normalizedModel, selectedAssets.length);
+            const totalCredits = readStoryboardAssetImageCost(effectiveConfig.modelCosts, normalizedModel, selectedAssets.length, normalizedSettings.imageResolution);
             if (typeof creditBalance === "number" && totalCredits > creditBalance) {
                 message.error(translate("canvas.insufficientCreditsAssetsNeedAvailable", { value0: selectedAssets.length, value1: totalCredits, value2: creditBalance }));
                 return;
@@ -2625,13 +2637,13 @@ function CanvasWorkspacePage() {
                 canvasVideoCount: "1",
             };
             if (!normalizedModel || !effectiveConfig.videoModels.includes(normalizedModel) || !isAiConfigReady(generationConfig, normalizedModel)) {
-                message.error(translate("canvas.selectAnAvailableVideoModelFirst"));
+                message.warning(translate("settings.contactAdministratorForModel"));
                 return;
             }
             const storyboardReferenceVideos = readStoryboardVideoReferences(nodeId, nodesRef.current, connectionsRef.current);
-            const invalidShot = selectedShots.find((shot) => readStoryboardVideoShotIssue(shot, generationConfig) || readStoryboardVideoReferenceIssue(shot, currentNode.storyboard.assets, generationConfig));
+            const invalidShot = selectedShots.find((shot) => readStoryboardVideoShotIssue(shot, generationConfig) || readStoryboardVideoReferenceIssue(shot, currentNode.storyboard.assets, generationConfig, storyboardReferenceVideos));
             if (invalidShot) {
-                const issue = readStoryboardVideoShotIssue(invalidShot, generationConfig) || readStoryboardVideoReferenceIssue(invalidShot, currentNode.storyboard.assets, generationConfig);
+                const issue = readStoryboardVideoShotIssue(invalidShot, generationConfig) || readStoryboardVideoReferenceIssue(invalidShot, currentNode.storyboard.assets, generationConfig, storyboardReferenceVideos);
                 message.error(translate("canvas.cannotGenerateShot", { value0: invalidShot.shotNumber, value1: issue }));
                 return;
             }
@@ -3147,6 +3159,12 @@ function CanvasWorkspacePage() {
             }
             if (!file || (!file.type.startsWith("image/") && !file.type.startsWith("video/"))) return;
 
+            if (targetNode) {
+                const replacement = { ...createCanvasNode(file.type.startsWith("video/") ? "video" : "image", targetNode.frame.position, { content: "pending-upload", mimeType: file.type }), id: targetNode.id };
+                const issue = readVideoReferenceAdditionIssue(nodesRef.current.map((node) => node.id === targetNode.id ? replacement : node), connectionsRef.current);
+                if (issue) { message.warning(issue); return; }
+            }
+
             if (target?.nodeId) {
                 const { beginNodeUpload, finishNodeUpload } = useCanvasUiStore.getState();
                 if (!beginNodeUpload(target.nodeId)) return;
@@ -3190,7 +3208,7 @@ function CanvasWorkspacePage() {
                 void (file.type.startsWith("video/") ? createVideoFileNode(file, position) : createImageFileNode(file, position));
             }
         },
-        [createAudioFileNode, createImageFileNode, createVideoFileNode, getCanvasCenter, message, screenToCanvas, size.height, size.width],
+        [readVideoReferenceAdditionIssue, createAudioFileNode, createImageFileNode, createVideoFileNode, getCanvasCenter, message, screenToCanvas, size.height, size.width],
     );
 
     const handleDrop = useCallback(

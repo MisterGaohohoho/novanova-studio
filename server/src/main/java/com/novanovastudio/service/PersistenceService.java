@@ -6,9 +6,11 @@ import com.alibaba.fastjson2.JSON;
 import com.alibaba.fastjson2.JSONArray;
 import com.alibaba.fastjson2.JSONObject;
 import com.novanovastudio.ai.AudioInputSupport;
+import com.novanovastudio.ai.VideoGenerationConstraintSupport;
 import com.alibaba.fastjson2.TypeReference;
 import com.novanovastudio.ai.AudioMediaProbe;
 import com.novanovastudio.ai.AiHttpClient;
+import com.novanovastudio.ai.AiImageSizeSupport;
 import com.novanovastudio.ai.VideoGenerationMode;
 import com.novanovastudio.ai.VideoResolution;
 import com.novanovastudio.agent.AgentActivityService;
@@ -17,6 +19,7 @@ import com.novanovastudio.common.ErrorCode;
 import com.novanovastudio.common.SensitiveDataCrypto;
 import com.novanovastudio.config.NovanovaProperties;
 import com.novanovastudio.dto.AiTaskDtos;
+import com.novanovastudio.dto.ImageBillingConfiguration;
 import com.novanovastudio.dto.PersistenceDtos;
 import com.novanovastudio.dto.VideoBillingConfiguration;
 import com.novanovastudio.entity.PersistenceRecords;
@@ -40,6 +43,7 @@ import java.util.HashSet;
 import java.util.HexFormat;
 import java.util.List;
 import java.util.LinkedHashMap;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
@@ -74,6 +78,9 @@ public class PersistenceService {
 
     /** 生成记录标题最大长度 */
     private static final int GENERATION_LOG_TITLE_MAX_LENGTH = 100;
+
+    /** 生成记录每页最多返回15条。 */
+    private static final int GENERATION_LOG_PAGE_SIZE = 15;
 
     /** 头像最大文件大小（字节） */
     private static final long AVATAR_MAX_FILE_SIZE_BYTES = 2L * 1024 * 1024;
@@ -201,6 +208,8 @@ public class PersistenceService {
                     List<String> capabilities = normalizeModelCapabilities(request.modelType(), request.capabilities());
                     VideoBillingConfiguration videoBillingConfiguration = normalizeVideoBillingConfiguration(
                             request.modelType(), capabilities, request.videoBillingConfiguration());
+                    ImageBillingConfiguration imageBillingConfiguration = normalizeImageBillingConfiguration(
+                            request.modelType(), request.imageBillingConfiguration());
                     record.setCapabilities(JSON.toJSONString(capabilities));
                     AudioInputSupport.validateCapability(request.modelType(), capabilities);
                     record.setDefaultModel(false);
@@ -212,14 +221,18 @@ public class PersistenceService {
                     record.setThinkingEnabled(thinkingEnabled(request.thinkingEnabled()));
                     record.setReasoningEffort(reasoningEffort(request.reasoningEffort()));
                     record.setRequestConcurrency(normalizeRequestConcurrency(request.requestConcurrency()));
+                    record.setConvertImageSizeToPixels("image".equals(request.modelType()) && Boolean.TRUE.equals(request.convertImageSizeToPixels()));
+                    record.setImageSizeMappings("image".equals(request.modelType())
+                            ? JSON.toJSONString(AiImageSizeSupport.normalizeMappings(request.imageSizeMappings())) : null);
                     JSONObject customBodyParameters = request.customBodyParameters() == null
                             ? normalizeCustomBodyParameters(record.getCustomBodyParameters())
                             : normalizeCustomBodyParameters(request.customBodyParameters());
                     record.setCustomBodyParameters(JSON.toJSONString(customBodyParameters));
                     record.setVideoBillingConfiguration(videoBillingConfiguration == null ? null : JSON.toJSONString(videoBillingConfiguration));
+                    record.setImageBillingConfiguration(imageBillingConfiguration == null ? null : JSON.toJSONString(imageBillingConfiguration));
                     boolean isCustomModel = Boolean.TRUE.equals(request.isCustomModel());
                     record.setIsCustomModel(isCustomModel);
-                    record.setCustomModelConfig(JSON.toJSONString(normalizeCustomModelConfig(request.modelType(), isCustomModel, capabilities, request.customModelConfig())));
+                    record.setCustomModelConfig(JSON.toJSONString(normalizeCustomModelConfig(request.modelType(), isCustomModel, capabilities, request.customModelConfig(), videoBillingConfiguration)));
                     record.setDisplayName(normalizeDisplayName(request.displayName(), request.modelName()));
                     record.setModelIcon(normalizeModelIcon(request.modelIcon()));
                     return repository.createPlatformAiModelConfig(record)
@@ -249,6 +262,9 @@ public class PersistenceService {
                             : request.videoBillingConfiguration();
                     VideoBillingConfiguration videoBillingConfiguration = normalizeVideoBillingConfiguration(
                             request.modelType(), capabilities, requestedVideoBillingConfiguration);
+                    // 图片价目表以请求为准，null 表示清空；前端保存时始终携带该字段。
+                    ImageBillingConfiguration imageBillingConfiguration = normalizeImageBillingConfiguration(
+                            request.modelType(), request.imageBillingConfiguration());
                     AudioInputSupport.validateCapability(request.modelType(), capabilities);
                     record.setModelType(request.modelType());
                     record.setCapabilities(JSON.toJSONString(capabilities));
@@ -261,14 +277,18 @@ public class PersistenceService {
                     record.setReasoningEffort(reasoningEffort(request.reasoningEffort()));
                     record.setRequestConcurrency(normalizeRequestConcurrency(
                             request.requestConcurrency() == null ? record.getRequestConcurrency() : request.requestConcurrency()));
+                    record.setConvertImageSizeToPixels("image".equals(request.modelType()) && Boolean.TRUE.equals(request.convertImageSizeToPixels()));
+                    record.setImageSizeMappings("image".equals(request.modelType())
+                            ? JSON.toJSONString(AiImageSizeSupport.normalizeMappings(request.imageSizeMappings())) : null);
                     JSONObject customBodyParameters = request.customBodyParameters() == null
                             ? normalizeCustomBodyParameters(record.getCustomBodyParameters())
                             : normalizeCustomBodyParameters(request.customBodyParameters());
                     record.setCustomBodyParameters(JSON.toJSONString(customBodyParameters));
                     record.setVideoBillingConfiguration(videoBillingConfiguration == null ? null : JSON.toJSONString(videoBillingConfiguration));
+                    record.setImageBillingConfiguration(imageBillingConfiguration == null ? null : JSON.toJSONString(imageBillingConfiguration));
                     boolean isCustomModel = Boolean.TRUE.equals(request.isCustomModel());
                     record.setIsCustomModel(isCustomModel);
-                    record.setCustomModelConfig(JSON.toJSONString(normalizeCustomModelConfig(request.modelType(), isCustomModel, capabilities, request.customModelConfig())));
+                    record.setCustomModelConfig(JSON.toJSONString(normalizeCustomModelConfig(request.modelType(), isCustomModel, capabilities, request.customModelConfig(), videoBillingConfiguration)));
                     record.setDisplayName(normalizeDisplayName(request.displayName(), record.getModelName()));
                     record.setModelIcon(normalizeModelIcon(request.modelIcon()));
                     PersistenceDtos.ModelConfig modelConfig = modelConfigDto(record);
@@ -330,7 +350,12 @@ public class PersistenceService {
                 record.getDisplayName(),
                 record.getModelIcon(),
                 Boolean.TRUE.equals(record.getIsCustomModel()),
-                parseCustomModelConfig(record.getCustomModelConfig()));
+                parseCustomModelConfig(record.getCustomModelConfig()),
+                "image".equals(record.getModelType()) && Boolean.TRUE.equals(record.getConvertImageSizeToPixels()),
+                "image".equals(record.getModelType()) ? AiImageSizeSupport.normalizeMappings(
+                        record.getImageSizeMappings() == null ? null : JSON.parseObject(record.getImageSizeMappings(),
+                                new TypeReference<Map<String, Map<String, String>>>() {})) : null,
+                parseImageBillingConfiguration(record.getImageBillingConfiguration()));
     }
 
     /**
@@ -455,6 +480,52 @@ public class PersistenceService {
     }
 
     /**
+     * 规范化图片模型的1K、2K、4K分辨率价目表。
+     *
+     * @param modelType String 模型类型
+     * @param configuration ImageBillingConfiguration 请求价目表
+     * @return ImageBillingConfiguration 规范化结果，非图片模型或未配置时返回null
+     */
+    private ImageBillingConfiguration normalizeImageBillingConfiguration(String modelType, ImageBillingConfiguration configuration) {
+        if (!"image".equals(modelType)) {
+            if (configuration != null) {
+                throw new BusinessException(ErrorCode.PARAM_INVALID, SystemMessage.of("business.onlyImageModelsSupportResolutionPricing"));
+            }
+            return null;
+        }
+        if (configuration == null || configuration.resolutionPrices() == null || configuration.resolutionPrices().isEmpty()) {
+            return null;
+        }
+        Map<String, Integer> prices = new LinkedHashMap<>();
+        for (Map.Entry<String, Integer> entry : configuration.resolutionPrices().entrySet()) {
+            String resolution = entry.getKey() == null ? "" : entry.getKey().trim().toUpperCase(Locale.ROOT);
+            if (!AiImageSizeSupport.RESOLUTIONS.contains(resolution)) {
+                throw new BusinessException(ErrorCode.PARAM_INVALID, SystemMessage.of("business.imagePriceTableContainsAnUnsupportedResolution"));
+            }
+            if (entry.getValue() == null || entry.getValue() < 0) {
+                throw new BusinessException(ErrorCode.PARAM_INVALID, SystemMessage.of("business.imageResolutionPriceMustBeANonnegativeNumber"));
+            }
+            prices.put(resolution, entry.getValue());
+        }
+        return new ImageBillingConfiguration(Map.copyOf(prices));
+    }
+
+    /**
+     * 解析数据库保存的图片分辨率价目表。
+     *
+     * @param value String JSON配置文本
+     * @return ImageBillingConfiguration 解析后的配置，未配置时返回null
+     */
+    private ImageBillingConfiguration parseImageBillingConfiguration(String value) {
+        if (!StringUtils.hasText(value) || "null".equals(value.trim())) return null;
+        try {
+            return JSON.parseObject(value, ImageBillingConfiguration.class);
+        } catch (Exception exception) {
+            throw new BusinessException(ErrorCode.PARAM_INVALID, SystemMessage.of("business.invalidImageResolutionPricingFormat"));
+        }
+    }
+
+    /**
      * 解析数据库保存的自定义模型配置。
      *
      * @param value String JSON配置文本
@@ -481,7 +552,8 @@ public class PersistenceService {
                     group.getString("queryRequestTemplate"),
                     group.getString("aiQueryPrompt"),
                     group.getString("queryResponseExample"),
-                    group.getString("queryResultPath")));
+                    group.getString("queryResultPath"),
+                    group.getObject("videoGenerationConstraints", com.novanovastudio.dto.VideoGenerationConstraints.class)));
         }
         return Map.copyOf(result);
     }
@@ -493,11 +565,13 @@ public class PersistenceService {
      * @param isCustomModel boolean 是否启用自定义模型
      * @param capabilities List<String> 已配置模型能力
      * @param config Map<String, CustomModelGroupConfig> 请求中的自定义模型配置
+     * @param billing VideoBillingConfiguration 视频计费限制
      * @return Map<String, CustomModelGroupConfig> 规范化后的配置
      */
     private Map<String, PersistenceDtos.CustomModelGroupConfig> normalizeCustomModelConfig(String modelType, boolean isCustomModel,
                                                                                             List<String> capabilities,
-                                                                                            Map<String, PersistenceDtos.CustomModelGroupConfig> config) {
+                                                                                            Map<String, PersistenceDtos.CustomModelGroupConfig> config,
+                                                                                            VideoBillingConfiguration billing) {
         Map<String, PersistenceDtos.CustomModelGroupConfig> input = config == null ? Map.of() : config;
         if ("text".equals(modelType)) {
             if (isCustomModel || !input.isEmpty()) {
@@ -559,7 +633,16 @@ public class PersistenceService {
                     group.responseExample(), group.resultPath(),
                     group.queryPath() == null ? null : group.queryPath().trim(), queryMethod,
                     group.queryRequestTemplate(), group.aiQueryPrompt(),
-                    group.queryResponseExample(), group.queryResultPath()));
+                    group.queryResponseExample(), group.queryResultPath(), "video".equals(modelType) ? group.videoGenerationConstraints() : null));
+        }
+        // 启用的每个视频模式都必须配置，不能只遍历已提交的分组而遗漏整组缺失。
+        if ("video".equals(modelType)) {
+            for (String mode : capabilities) {
+                if (!VideoGenerationMode.isSupported(mode)) continue;
+                PersistenceDtos.CustomModelGroupConfig group = normalized.get(mode);
+                VideoGenerationConstraintSupport.validateConfiguration(mode,
+                        group == null ? null : group.videoGenerationConstraints(), capabilities, billing);
+            }
         }
         return Map.copyOf(normalized);
     }
@@ -878,15 +961,20 @@ public class PersistenceService {
     }
 
     /**
-     * 查询生成记录列表
+     * 分页查询生成记录，每页最多返回15条。
      *
      * @param logType String 记录类型
-     * @return Mono<List<JSONObject>> 生成记录列表
+     * @param page int 从1开始的页码
+     * @return Mono<GenerationLogListResponse> 生成记录和下一页标记
+     * @throws BusinessException 页码小于1时抛出
      */
-    public Mono<List<JSONObject>> listGenerationLogs(String logType) {
-        // 生成记录按用户和可选类型筛选，并附加任务状态及未读判断时间。
+    public Mono<PersistenceDtos.GenerationLogListResponse> listGenerationLogs(String logType, int page) {
+        if (page < 1) {
+            return Mono.error(new BusinessException(ErrorCode.PARAM_INVALID, SystemMessage.of("business.invalidPaginationParameters")));
+        }
+        // 多查询一条判断下一页，避免为每次滚动执行全量计数。
         return currentUserProvider.currentUserId()
-                .flatMapMany(userId -> repository.listGenerationLogs(userId, logType))
+                .flatMapMany(userId -> repository.listGenerationLogs(userId, logType, (page - 1L) * GENERATION_LOG_PAGE_SIZE, GENERATION_LOG_PAGE_SIZE + 1))
                 .map(record -> {
                     JSONObject generationLog = parseJson(record.getData());
                     generationLog.put("generationStatus", record.getGenerationStatus());
@@ -894,7 +982,9 @@ public class PersistenceService {
                     generationLog.put("generationViewedAt", formatNullableTime(record.getGenerationViewedAt()));
                     return generationLog;
                 })
-                .collectList();
+                .collectList()
+                .map(logs -> new PersistenceDtos.GenerationLogListResponse(
+                        logs.subList(0, Math.min(logs.size(), GENERATION_LOG_PAGE_SIZE)), logs.size() > GENERATION_LOG_PAGE_SIZE));
     }
 
     /**

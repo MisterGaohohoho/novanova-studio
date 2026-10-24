@@ -124,8 +124,8 @@ public class PersistenceRepository {
         return databaseClient.sql("""
                 SELECT id, user_id, model_config_id, channel_id, model_name, model_type,
                        capabilities::text AS capabilities, is_default, sort_order, 0 AS credit_cost, 'generation' AS credit_unit,
-                       thinking_enabled, reasoning_effort, 1 AS request_concurrency, '{}'::jsonb AS custom_body_parameters,
-                       NULL::text AS video_billing_configuration, created_at, updated_at
+                       thinking_enabled, reasoning_effort, 1 AS request_concurrency, FALSE AS convert_image_size_to_pixels, NULL::text AS image_size_mappings, '{}'::jsonb AS custom_body_parameters,
+                       NULL::text AS video_billing_configuration, NULL::text AS image_billing_configuration, created_at, updated_at
                 FROM user_ai_model_configs WHERE user_id=:userId ORDER BY model_type, sort_order, id
                 """).bind("userId", userId).map((row, metadata) -> RowMappers.userAiModelConfig(row)).all();
     }
@@ -135,8 +135,8 @@ public class PersistenceRepository {
         return databaseClient.sql("""
                 SELECT id, user_id, model_config_id, channel_id, model_name, model_type,
                        capabilities::text AS capabilities, is_default, sort_order, 0 AS credit_cost, 'generation' AS credit_unit,
-                       thinking_enabled, reasoning_effort, 1 AS request_concurrency, '{}'::jsonb AS custom_body_parameters,
-                       NULL::text AS video_billing_configuration, created_at, updated_at
+                       thinking_enabled, reasoning_effort, 1 AS request_concurrency, FALSE AS convert_image_size_to_pixels, NULL::text AS image_size_mappings, '{}'::jsonb AS custom_body_parameters,
+                       NULL::text AS video_billing_configuration, NULL::text AS image_billing_configuration, created_at, updated_at
                 FROM user_ai_model_configs WHERE user_id=:userId AND model_config_id=:modelConfigId
                 """).bind("userId", userId).bind("modelConfigId", modelConfigId)
                 .map((row, metadata) -> RowMappers.userAiModelConfig(row)).one();
@@ -403,8 +403,8 @@ public class PersistenceRepository {
         return databaseClient.sql("""
                 SELECT id, NULL::BIGINT AS user_id, model_config_id, channel_id, model_name, model_type,
                        capabilities::text AS capabilities, is_default, sort_order, credit_cost, credit_unit,
-                       thinking_enabled, reasoning_effort, request_concurrency, custom_body_parameters::text AS custom_body_parameters,
-                       video_billing_configuration::text AS video_billing_configuration, display_name, model_icon,
+                       thinking_enabled, reasoning_effort, request_concurrency, convert_image_size_to_pixels, image_size_mappings::text AS image_size_mappings, custom_body_parameters::text AS custom_body_parameters,
+                       video_billing_configuration::text AS video_billing_configuration, image_billing_configuration::text AS image_billing_configuration, display_name, model_icon,
                        is_custom_model, custom_model_config::text AS custom_model_config, created_at, updated_at
                 FROM platform_ai_model_configs
                 ORDER BY created_at DESC, id DESC
@@ -421,8 +421,8 @@ public class PersistenceRepository {
         return databaseClient.sql("""
                 SELECT id, NULL::BIGINT AS user_id, model_config_id, channel_id, model_name, model_type,
                        capabilities::text AS capabilities, is_default, sort_order, credit_cost, credit_unit,
-                       thinking_enabled, reasoning_effort, request_concurrency, custom_body_parameters::text AS custom_body_parameters,
-                       video_billing_configuration::text AS video_billing_configuration, display_name, model_icon,
+                       thinking_enabled, reasoning_effort, request_concurrency, convert_image_size_to_pixels, image_size_mappings::text AS image_size_mappings, custom_body_parameters::text AS custom_body_parameters,
+                       video_billing_configuration::text AS video_billing_configuration, image_billing_configuration::text AS image_billing_configuration, display_name, model_icon,
                        is_custom_model, custom_model_config::text AS custom_model_config, created_at, updated_at
                 FROM platform_ai_model_configs
                 WHERE model_config_id = :modelConfigId
@@ -452,10 +452,10 @@ public class PersistenceRepository {
         DatabaseClient.GenericExecuteSpec spec = databaseClient.sql("""
                 INSERT INTO platform_ai_model_configs(model_config_id, channel_id, model_name, model_type, capabilities, is_default, sort_order,
                                                       credit_cost, credit_unit, thinking_enabled, reasoning_effort, request_concurrency, custom_body_parameters,
-                                                      video_billing_configuration, display_name, model_icon, is_custom_model, custom_model_config)
+                                                      video_billing_configuration, image_billing_configuration, display_name, model_icon, is_custom_model, custom_model_config, convert_image_size_to_pixels, image_size_mappings)
                 VALUES (:modelConfigId, :channelId, :modelName, :modelType, CAST(:capabilities AS jsonb), :isDefault, :sortOrder,
                         :creditCost, :creditUnit, :thinkingEnabled, :reasoningEffort, :requestConcurrency, CAST(:customBodyParameters AS jsonb),
-                        CAST(:videoBillingConfiguration AS jsonb), :displayName, :modelIcon, :isCustomModel, CAST(:customModelConfig AS jsonb))
+                        CAST(:videoBillingConfiguration AS jsonb), CAST(:imageBillingConfiguration AS jsonb), :displayName, :modelIcon, :isCustomModel, CAST(:customModelConfig AS jsonb), :convertImageSizeToPixels, CAST(:imageSizeMappings AS jsonb))
                 """).bind("modelConfigId", record.getModelConfigId()).bind("channelId", record.getChannelId())
                 .bind("modelName", record.getModelName()).bind("modelType", record.getModelType())
                 .bind("capabilities", record.getCapabilities()).bind("isDefault", Boolean.TRUE.equals(record.getDefaultModel()))
@@ -465,7 +465,10 @@ public class PersistenceRepository {
                 .bind("requestConcurrency", record.getRequestConcurrency() == null ? 1 : record.getRequestConcurrency())
                 .bind("customBodyParameters", record.getCustomBodyParameters() == null ? "{}" : record.getCustomBodyParameters())
                 .bind("videoBillingConfiguration", record.getVideoBillingConfiguration() == null ? "null" : record.getVideoBillingConfiguration())
+                .bind("imageBillingConfiguration", record.getImageBillingConfiguration() == null ? "null" : record.getImageBillingConfiguration())
                 .bind("isCustomModel", Boolean.TRUE.equals(record.getIsCustomModel()))
+                .bind("convertImageSizeToPixels", Boolean.TRUE.equals(record.getConvertImageSizeToPixels()))
+                .bind("imageSizeMappings", record.getImageSizeMappings() == null ? "null" : record.getImageSizeMappings())
                 .bind("customModelConfig", record.getCustomModelConfig() == null ? "null" : record.getCustomModelConfig());
         spec = R2dbcBindings.bindNullable(spec, "displayName", record.getDisplayName(), String.class);
         spec = R2dbcBindings.bindNullable(spec, "modelIcon", record.getModelIcon(), String.class);
@@ -485,9 +488,10 @@ public class PersistenceRepository {
                 UPDATE platform_ai_model_configs
                 SET model_type = :modelType, capabilities = CAST(:capabilities AS jsonb), sort_order = :sortOrder, credit_cost = :creditCost,
                     credit_unit = :creditUnit, request_concurrency = :requestConcurrency, custom_body_parameters = CAST(:customBodyParameters AS jsonb),
-                    video_billing_configuration = CAST(:videoBillingConfiguration AS jsonb), display_name = :displayName, model_icon = :modelIcon,
+                    video_billing_configuration = CAST(:videoBillingConfiguration AS jsonb), image_billing_configuration = CAST(:imageBillingConfiguration AS jsonb), display_name = :displayName, model_icon = :modelIcon,
                     thinking_enabled = :thinkingEnabled, reasoning_effort = :reasoningEffort,
-                    is_custom_model = :isCustomModel, custom_model_config = CAST(:customModelConfig AS jsonb),
+                    is_custom_model = :isCustomModel, custom_model_config = CAST(:customModelConfig AS jsonb), convert_image_size_to_pixels = :convertImageSizeToPixels,
+                    image_size_mappings = CAST(:imageSizeMappings AS jsonb),
                     updated_at = CURRENT_TIMESTAMP
                 WHERE model_config_id = :modelConfigId
                 """).bind("modelType", record.getModelType()).bind("capabilities", record.getCapabilities())
@@ -495,9 +499,12 @@ public class PersistenceRepository {
                 .bind("requestConcurrency", record.getRequestConcurrency() == null ? 1 : record.getRequestConcurrency())
                 .bind("customBodyParameters", record.getCustomBodyParameters() == null ? "{}" : record.getCustomBodyParameters())
                 .bind("videoBillingConfiguration", record.getVideoBillingConfiguration() == null ? "null" : record.getVideoBillingConfiguration())
+                .bind("imageBillingConfiguration", record.getImageBillingConfiguration() == null ? "null" : record.getImageBillingConfiguration())
                 .bind("thinkingEnabled", record.getThinkingEnabled() == null || Boolean.TRUE.equals(record.getThinkingEnabled()))
                 .bind("reasoningEffort", record.getReasoningEffort() == null ? "high" : record.getReasoningEffort())
                 .bind("isCustomModel", Boolean.TRUE.equals(record.getIsCustomModel()))
+                .bind("convertImageSizeToPixels", Boolean.TRUE.equals(record.getConvertImageSizeToPixels()))
+                .bind("imageSizeMappings", record.getImageSizeMappings() == null ? "null" : record.getImageSizeMappings())
                 .bind("customModelConfig", record.getCustomModelConfig() == null ? "null" : record.getCustomModelConfig())
                 .bind("modelConfigId", record.getModelConfigId());
         spec = R2dbcBindings.bindNullable(spec, "displayName", record.getDisplayName(), String.class);
@@ -773,13 +780,15 @@ public class PersistenceRepository {
     }
 
     /**
-     * 查询生成记录列表
+     * 分页查询生成记录列表
      *
      * @param userId Long 用户ID
      * @param logType String 记录类型
-     * @return Flux<SnapshotRecord> 生成记录列表
+     * @param offset long 已跳过的记录条数
+     * @param limit int 查询条数，包含判断下一页的额外一条
+     * @return Flux<GenerationLogRecord> 当前页生成记录
      */
-    public Flux<PersistenceRecords.GenerationLogRecord> listGenerationLogs(Long userId, String logType) {
+    public Flux<PersistenceRecords.GenerationLogRecord> listGenerationLogs(Long userId, String logType, long offset, int limit) {
         // 基础查询限定用户和未删除状态，可选类型筛选按参数决定。
         String sql = """
                 SELECT id, user_id, log_type AS record_type, title, log_data::text AS record_data, status,
@@ -790,8 +799,9 @@ public class PersistenceRepository {
         if (logType != null && !logType.isBlank()) {
             sql += " AND log_type = :logType";
         }
-        sql += " ORDER BY created_at DESC";
-        DatabaseClient.GenericExecuteSpec spec = databaseClient.sql(sql).bind("userId", userId);
+        // 相同创建时间按主键排序，保证相邻分页的顺序确定。
+        sql += " ORDER BY created_at DESC, id DESC LIMIT :limit OFFSET :offset";
+        DatabaseClient.GenericExecuteSpec spec = databaseClient.sql(sql).bind("userId", userId).bind("limit", limit).bind("offset", offset);
         if (logType != null && !logType.isBlank()) {
             spec = spec.bind("logType", logType);
         }
