@@ -10,7 +10,7 @@
 </p>
 
 <p align="center">
-  <a href="https://www.novanovastudio.cn/">>>>>如果觉得部署麻烦、找便宜渠道麻烦->点我在线体验<<<<<</a>
+  <a href="https://www.novanovastudio.cn/">>>>>如果觉得部署麻烦、找便宜渠道麻烦->点我在线体验 seedance2.0系列4折官转API<<<<<</a>
 </p>
 
 <p align="center">
