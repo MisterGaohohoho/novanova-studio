@@ -5,7 +5,6 @@
 </p>
 
 <h1 align="center">Novanova Studio</h1>
-
 <p align="center">
   AI Agent 驱动的视觉创作工作台：在一个持续保留上下文的空间里完成构思、生成、编辑、编排与沉淀。
 </p>
@@ -29,6 +28,28 @@
 <p align="center">
   <img src="https://ai-flow-1253318092.cos.ap-singapore.myqcloud.com/novanova-studio/docs/mjcz.png" alt="Novanova Studio 漫剧创作">
 </p>
+
+### 感谢以下赞助商的鼎力支持
+<table align="center">
+  <thead>
+    <tr>
+      <th align="center">赞助商</th>
+      <th align="center">note</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td align="left" width="33%">
+        <img src="github_images/sponsor/notoken.png" alt="notoken" width="220" />
+      </td>
+      <td align="left" width="33%">
+        https://notoken.pro/ <br>
+        让每一次调用 都释放创造力 <br>
+        seedance渠道超低折扣
+      </td>
+    </tr>
+  </tbody>
+</table>
 
 ## 联系我
 - 商业授权/企业版
