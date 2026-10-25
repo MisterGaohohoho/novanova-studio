@@ -30,7 +30,7 @@
 </p>
 
 ### 感谢以下赞助商的鼎力支持
-<table align="center">
+<table>
   <thead>
     <tr>
       <th align="center">赞助商</th>
