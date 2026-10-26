@@ -6,7 +6,7 @@
 
 <h1 align="center">Novanova Studio</h1>
 <p align="center">
-  AI Agent 驱动的视觉创作工作台：在一个持续保留上下文的空间里完成构思、生成、编辑、编排与沉淀。
+  NovaNova Studio 一个 Agent 驱动的集 AI图片生成、AI视频生成、无限画布、自定义模型 API 、AI漫剧、AI短剧、小说解析剧本、小说转短剧、3D导演台、用户管理、积分管理于一体的全流程开源平台
 </p>
 
 <p align="center">
