@@ -170,38 +170,6 @@ The project selects an adapter by a provider's `apiFormat` (API request format).
 
 Docker deployments run Flyway migrations automatically; the current branch must migrate through `V28__Add_Password_Reset.sql`. Production deployments should also configure `APP_SECRET_KEY`, `FRONTEND_BASE_URL`, trusted proxy addresses via `TRUSTED_PROXY_ADDRESSES`, and the unified AI-task polling interval `AI_TASK_POLLING_INTERVAL_SECONDS`. See the [Docker Deployment Guide](deploy_docs/docker-deploy.md) for details.
 
-## 📝 Agent Prompt Configuration
-
-Agent behavioral prompts are stored as editable files in `server/config/prompts/`; they do not need to be hardcoded in Java:
-
-| File | Purpose | Override Environment Variable |
-| --- | --- | --- |
-| `agent-main.md` | Primary Agent intent recognition, task dependency graph, and page capability boundaries. | `AI_SYSTEM_PROMPT_AGENT_MAIN_FILE` |
-| `agent-image.md` | Tools and behavioral constraints for the image-generation and image-editing Agent. | `AI_SYSTEM_PROMPT_AGENT_IMAGE_FILE` |
-| `agent-video.md` | Tools and behavioral constraints for the video-generation and video-editing Agent. | `AI_SYSTEM_PROMPT_AGENT_VIDEO_FILE` |
-| `agent-canvas.md` | Canvas-state understanding and canvas-operation constraints for the canvas Agent. | `AI_SYSTEM_PROMPT_AGENT_CANVAS_FILE` |
-| `agent-storyboard.md` | Storyboard generation and Chinese prompt-composition constraints. | `AI_SYSTEM_PROMPT_AGENT_STORYBOARD_FILE` |
-| `image-storyboard-asset.md` | Storyboard asset image prompt template, split by `character`, `scene`, and `prop` sections. | `AI_SYSTEM_PROMPT_IMAGE_STORYBOARD_ASSET_FILE` |
-| `optimization-image.md` | Image prompt optimization strategy. | `AI_SYSTEM_PROMPT_OPTIMIZATION_IMAGE_FILE` |
-| `optimization-video.md` | Video prompt optimization strategy. | `AI_SYSTEM_PROMPT_OPTIMIZATION_VIDEO_FILE` |
-
-By default, local development reads from `server/config/prompts/` at the project root. For Docker deployments, Compose mounts that directory read-only at `/app/config/prompts/`. When replacing a prompt-file path, make sure the runtime directory and corresponding environment variable match.
-
-## 🔒 Security Notes
-
-Do not commit `.env`, AI provider credentials, object storage credentials, or certificate private keys to Git. Browser-visible `NEXT_PUBLIC_*` environment variables must never contain secrets.
-
-## 🔍 Troubleshooting
-
-| Symptom | What to Check |
-| --- | --- |
-| `http://127.0.0.1:8080/api/v1/health` is unavailable | Confirm PostgreSQL and Redis are running, the connection address and port in `.env` are correct, and inspect the server startup logs. |
-| The frontend cannot call the API | Confirm the server uses port `8080`. If you changed it, set `NEXT_PUBLIC_SERVER_URL` before starting `pnpm dev`. |
-| No models are available on the Agent or generation pages | Save the AI provider, model capability configuration, and corresponding default models in Configuration & User Preferences. |
-| Uploading materials or saving generated results fails | Check that default object storage is configured, its credentials are valid, and the bucket has read and write permissions. |
-| Agent prompt files cannot be found | Start from the project root with `mvn -f server/pom.xml spring-boot:run`, or explicitly override the relevant `AI_SYSTEM_PROMPT_*_FILE` environment variable. |
-| Nginx fails in a full Docker Compose deployment | Nginx uses `network_mode: host` and host-directory mounts, which are suitable only for Linux servers. See the [Docker Deployment Guide](deploy_docs/docker-deploy.md). |
-
 ## 📚 Related Documentation
 
 - [Novanova Studio documentation portal](/docs)
